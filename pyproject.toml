@@ -1,0 +1,61 @@
+[project]
+name = "kg-llm-completion"
+version = "0.1.0"
+description = "LLM-based knowledge graph completion with KGE-mined hard negatives for DPO."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Tudor Pricop", email = "pricoptudor2001@gmail.com" }]
+license = { text = "MIT" }
+
+# Core deps that should install everywhere (laptop, Kaggle, Colab).
+# Versions are floors, not pins. We'll lock with pip freeze once Week 1 is green.
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.40.0",
+    "datasets>=2.18.0",
+    "accelerate>=0.28.0",
+    "pykeen>=1.10.0",
+    "wandb>=0.16.0",
+    "hydra-core>=1.3.0",
+    "omegaconf>=2.3.0",
+    "pandas",
+    "numpy",
+    "tqdm",
+    "requests",
+]
+
+[project.optional-dependencies]
+# Local dev: lint, test, notebooks, plotting.
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.4.0",
+    "ipykernel",
+    "jupyter",
+    "matplotlib",
+    "seaborn",
+]
+# Heavy training-time deps. Skip on Windows/no-GPU dev machines.
+train = [
+    "trl>=0.9.0",
+    "peft>=0.10.0",
+    "bitsandbytes>=0.43.0",
+]
+# General-capability evaluation (catastrophic forgetting checks).
+eval = [
+    "lm-evaluation-harness",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # line-too-long handled by formatter
