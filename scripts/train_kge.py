@@ -36,12 +36,34 @@ def _labeled(triples: torch.Tensor, ds) -> np.ndarray:
     return out
 
 
-def build_factories(ds):
-    """Three TriplesFactories (train/valid/test) that all share OUR ID space."""
-    common = dict(entity_to_id=ds.entity_to_id, relation_to_id=ds.relation_to_id)
-    train = TriplesFactory.from_labeled_triples(_labeled(ds.train_triples, ds), **common)
-    valid = TriplesFactory.from_labeled_triples(_labeled(ds.valid_triples, ds), **common)
-    test = TriplesFactory.from_labeled_triples(_labeled(ds.test_triples, ds), **common)
+def build_factories(ds, create_inverse_triples: bool = False):
+    """Three TriplesFactories (train/valid/test) that all share OUR ID space.
+
+    With `create_inverse_triples=True`, PyKEEN also learns a separate embedding for
+    each relation's inverse direction. This is the standard trick for FB15k-237:
+    under LCWA training the model is otherwise only ever trained to predict TAILS,
+    so head prediction (half of the pooled eval) stays near-random and the overall
+    MRR is roughly halved. Inverse triples turn head prediction into another
+    tail-prediction problem the model actually learns.
+
+    Valid/test are built from the TRAIN factory's id maps so the (now possibly
+    extended) relation IDs stay consistent. The original 237 relations keep ids
+    0..236, so our test triples and eval harness still line up; PyKEEN handles the
+    inverse-relation lookup internally inside score_h.
+    """
+    train = TriplesFactory.from_labeled_triples(
+        _labeled(ds.train_triples, ds),
+        entity_to_id=ds.entity_to_id,
+        relation_to_id=ds.relation_to_id,
+        create_inverse_triples=create_inverse_triples,
+    )
+    shared = dict(
+        entity_to_id=train.entity_to_id,
+        relation_to_id=train.relation_to_id,
+        create_inverse_triples=create_inverse_triples,
+    )
+    valid = TriplesFactory.from_labeled_triples(_labeled(ds.valid_triples, ds), **shared)
+    test = TriplesFactory.from_labeled_triples(_labeled(ds.test_triples, ds), **shared)
     return train, valid, test
 
 
@@ -81,10 +103,12 @@ def main() -> None:
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     ds = load_fb15k237(args.data_dir)
-    train, valid, test = build_factories(ds)
+    cit = cfg.get("create_inverse_triples", False)
+    train, valid, test = build_factories(ds, create_inverse_triples=cit)
     print(
         f"Aligned TriplesFactories on our IDs: "
-        f"{train.num_entities} entities, {train.num_relations} relations."
+        f"{train.num_entities} entities, {train.num_relations} relations "
+        f"(inverse triples: {cit})."
     )
 
     result = pipeline(

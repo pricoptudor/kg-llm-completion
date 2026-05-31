@@ -9,6 +9,11 @@ model_kwargs:
   # (a real + an imaginary part), so 256 here means 512 real numbers per entity.
   embedding_dim: 256
 
+# Train BOTH directions: also learn each relation's inverse. Essential under LCWA
+# on FB15k-237 — without it the model only ever learns to predict tails, head-side
+# ranking stays near-random, and the pooled MRR is roughly halved.
+create_inverse_triples: true
+
 # HOW we feed the model. "lcwa" = instead of sampling a few fake tails, for each
 # (head, relation) we score EVERY entity as a candidate tail at once and treat the
 # known-true ones as the positives. Denser learning signal; it's ComplEx's happy

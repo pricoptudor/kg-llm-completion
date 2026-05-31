@@ -11,6 +11,9 @@ model_kwargs:
 
 # Same dense classification setup as ComplEx (its closest relative), with the
 # size-pressure regularizer QuatE also relies on.
+# Inverse triples for the same reason as ComplEx: LCWA trains tails only, so we
+# add each relation's inverse to also train head prediction.
+create_inverse_triples: true
 training_loop: lcwa
 loss: crossentropy
 
