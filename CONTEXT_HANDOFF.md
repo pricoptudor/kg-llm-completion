@@ -5,8 +5,8 @@ work on this project. The authoritative plan is `kg_llm_project_plan.md`;
 this file captures **where we are inside that plan** as of the most recent
 session, plus the working agreements that aren't visible from code.
 
-> Last updated: 2026-05-18 (session immediately after the FB15k-237 download
-> script's smoke check passed on Tudor's Windows machine).
+> Last updated: 2026-05-31 (session that completed Week 1 Day 1–2 — data loader,
+> filtered-eval harness, and the frequency-baseline smoke test, all green).
 
 ---
 
@@ -31,7 +31,8 @@ session, plus the working agreements that aren't visible from code.
 
 ## Where we are in the plan
 
-We are in **Phase 1, Week 1, Day 1–2** of the 8-week plan.
+We have **completed Phase 1, Week 1, Day 1–2** of the 8-week plan and are
+starting **Day 3–5 (PyKEEN KGE baseline training)**.
 
 ### Done
 
@@ -52,19 +53,31 @@ We are in **Phase 1, Week 1, Day 1–2** of the 8-week plan.
 - [x] `scripts/download_fb15k237.py` written and **smoke-check passing**
       after one fix-up round (see "Lessons" below). Files live in
       `data_cache/fb15k237/`.
+- [x] **Data loader** `src/kg_llm/data/fb15k237.py`: `load_fb15k237()` returns a
+      `FB15k237` dataclass with train/valid/test as `(N,3)` LongTensors plus all
+      id↔MID↔name maps; `build_filtered_index()` returns a `FilteredIndex` of
+      known-true heads/tails. Asserts canonical counts at load. Verified clean
+      (14,541 / 237 / 272,115 / 17,535 / 20,466).
+- [x] **Filtered-eval harness** `src/kg_llm/eval/ranking.py`: `filtered_ranks`
+      (realistic tie handling), `aggregate` (MRR + Hits@{1,3,10}), `evaluate`
+      (pools head+tail). Brute-force toy test in `tests/test_ranking.py` — green.
+- [x] **End-to-end smoke** `src/kg_llm/eval/baselines.py` (`FrequencyBaseline`)
+      + `scripts/run_frequency_baseline.py`. Filtered MRR 0.2334 / H@1 0.1700 /
+      H@3 0.2500 / H@10 0.3541 on test; matches an independent NumPy recompute.
 
-### Open tasks (current session was paused here)
+### Open tasks
 
-The TaskCreate list at the time of the handoff:
+All Day 1–2 tasks are complete. The TaskCreate list at this handoff:
 
 | # | Status        | Title                                                | Notes |
 |---|---------------|------------------------------------------------------|-------|
 | 1 | completed     | Conceptual foundations: KGs, link prediction, FB15k-237 | |
 | 2 | completed     | Write repo scaffolding + git init                    | |
-| 3 | in_progress   | Download FB15k-237 and inspect                       | Smoke check passing; waiting on Tudor's explicit "signal" before marking complete and moving on. |
-| 4 | pending       | Build data loading module                            | `src/kg_llm/data/fb15k237.py`. Needs `(h, r, t)` int tensors + id↔name maps + filtered-eval index. |
-| 5 | pending       | Concept + implementation: filtered evaluation        | Cover the math properly, then implement against a brute-force scorer on a toy. |
-| 6 | pending       | Verify Day 1–2 setup end-to-end                      | Smoke test the harness with a trivial baseline (e.g., frequency of tail given relation). |
+| 3 | completed     | Download FB15k-237 and inspect                       | Coverage smoke check passing. |
+| 4 | completed     | Build data loading module                            | `src/kg_llm/data/fb15k237.py`. |
+| 5 | completed     | Filtered evaluation: theory + implementation         | `src/kg_llm/eval/ranking.py` + `tests/test_ranking.py`. |
+| 6 | completed     | Verify Day 1–2 setup end-to-end                      | Frequency baseline; harness produces sane numbers. |
+| 7 | next          | KGE baselines (Day 3–5)                              | PyKEEN ComplEx/RotatE/TransE/QuatE on FB15k-237; wrap as `Scorer`s; save embeddings for hard-negative mining. |
 
 ---
 
@@ -97,6 +110,20 @@ purpose — don't drift into something else by accident.
 7. **Public GitHub repo from day one** (`gh repo create --public`). Portfolio
    signal: hiring managers see incremental honest commits, not a long
    polishing window followed by one mega-commit.
+8. **ID space built from the triples, in sorted string order** — not from the
+   label files, not hash order. Sorted order makes the id↔entity mapping
+   deterministic across Tudor's machines, so embedding rows don't reshuffle on
+   GitHub sync. The label superset (entity2text) gets no ID of its own.
+9. **`Scorer` protocol** (`score_tails`/`score_heads` → `(batch, num_entities)`)
+   is the single interface every model implements: frequency baseline, PyKEEN
+   KGE, and the LLM log-prob scorer. The eval harness never special-cases a model.
+10. **Realistic tie handling** (optimistic/pessimistic average, PyKEEN default)
+    in filtered ranking — chosen so degenerate constant scorers can't game Hits@k.
+11. **`FilteredIndex` is opt-in** (`ds.build_filtered_index()`), not baked into
+    `load()`: it materializes dicts over all ~310k triples and not every caller
+    needs it.
+12. **Trivial baselines live in `src/kg_llm/eval/baselines.py`** for now (their
+    job is harness validation). May move next to the real models later.
 
 ---
 
@@ -115,6 +142,25 @@ purpose — don't drift into something else by accident.
 - **Sandbox proxy is locked down.** The Linux sandbox can't reach
   `raw.githubusercontent.com` or `huggingface.co`. Anything network-bound
   has to run on Tudor's Windows side. Don't try to download from the sandbox.
+  (Corollary: the sandbox also can't `pip install torch`, so torch-dependent
+  code is verified there via a tiny torch stub or an independent NumPy mirror,
+  and the real run happens on Tudor's machine.)
+
+- **CRLF line-ending trap.** The `.tsv` triple files are CRLF-terminated (written
+  through Windows); the `.txt` label files are LF-only. Without stripping `\r`,
+  every tail entity carries a trailing carriage return and the entity vocab
+  silently doubles (27,395 vs the true 14,541). The loader strips `\r` and
+  asserts canonical counts so this can't slip through again.
+
+- **The frequency baseline is surprisingly strong on FB15k-237** (filtered MRR
+  ≈ 0.23, ignoring the head entity entirely). Dataset bias — many relations are
+  skewed toward a few objects. It's the honest floor for the results table;
+  per-relation deltas over it are more informative than the aggregate.
+
+- **torch DLL hell on Windows.** A CUDA build of torch on a no-GPU laptop (and/or
+  an Anaconda-derived venv pulling conflicting MKL/OpenMP DLLs) throws
+  `WinError 1114 ... c10.dll`. Fix that stuck: rebuild the venv with the
+  python.org `py` launcher (not Anaconda) and install the CPU torch wheel.
 
 ---
 
@@ -140,13 +186,15 @@ purpose — don't drift into something else by accident.
   against wrong answers.
 - LLM scoring formulation: $\log p_\theta(t \mid \text{prompt})$ over candidates,
   not generation. Apples-to-apples with KGE ranking.
+- The *math* of filtered evaluation (covered this session): rank = 1 + #strictly
+  greater after filtering; realistic ties add 0.5 each; MRR = mean(1/rank);
+  Hits@k = mean(rank ≤ k); every test triple yields a head AND a tail query and
+  the two are pooled (|Q| = 2·|test|).
 
 ## Conceptual context still to cover (queued)
 
-- The *math* of filtered evaluation: MRR formula, Hits@k formula, how to
-  average over head and tail prediction. (Task 5, coming next.)
 - KGE training loss (negative sampling, NSSA — Sun et al. 2019); margin loss
-  vs cross-entropy with negatives.
+  vs cross-entropy with negatives. (Day 3–5, coming next.)
 - SFT loss masking (only on assistant turn).
 - DPO loss derivation from RLHF: $\mathcal{L}_{\text{DPO}} = -\mathbb{E}[\log \sigma(\beta (\log \pi_\theta(y_w|x)/\pi_\text{ref}(y_w|x) - \log \pi_\theta(y_l|x)/\pi_\text{ref}(y_l|x)))]$.
 - Hard negative mining for DPO — the "clever bit" of the project.
@@ -162,29 +210,32 @@ purpose — don't drift into something else by accident.
 | `pyproject.toml`                      | Deps + ruff config.                                |
 | `scripts/download_fb15k237.py`        | Idempotent dataset downloader with smoke check.    |
 | `data_cache/fb15k237/`                | train.tsv / valid.tsv / test.tsv / entity2text.txt / relation2text.txt. Gitignored. |
-| `src/kg_llm/data/__init__.py`         | Empty stub; data loader lands here next (Task 4).  |
+| `src/kg_llm/data/fb15k237.py`         | Data loader + `FilteredIndex`.                     |
+| `src/kg_llm/eval/ranking.py`          | Filtered ranking harness (`Scorer`, `evaluate`).   |
+| `src/kg_llm/eval/baselines.py`        | `FrequencyBaseline` (harness sanity floor).        |
+| `tests/test_ranking.py`               | Brute-force toy verification of the harness.       |
+| `scripts/run_frequency_baseline.py`   | End-to-end Day 1–2 smoke entry point.              |
+| `reports/writeup_notes.md`            | Running log of findings for the technical report.  |
 | `CONTEXT_HANDOFF.md`                  | This file.                                         |
 
 ---
 
 ## Next concrete action when picking up
 
-1. Re-read this file and `kg_llm_project_plan.md` Week 1 Day 6–7 onward.
-2. Confirm with Tudor that he wants to proceed (he asked for an explicit
-   signal before Task 4 last session).
-3. Move to **Task 4 — Build data loading module** in `src/kg_llm/data/fb15k237.py`.
-   It should expose:
-   - `load_fb15k237(data_dir) -> FB15k237` returning a dataclass with
-     `train_triples`, `valid_triples`, `test_triples` as `LongTensor`s of
-     shape `(N, 3)`, plus `entity_to_id`, `id_to_entity`, `id_to_name`,
-     `relation_to_id`, `id_to_relation`, `id_to_relation_name`.
-   - A `FilteredIndex` helper for filtered evaluation (Task 5).
-4. Then **Task 5 — filtered evaluation theory + implementation** in
-   `src/kg_llm/eval/ranking.py`, verified against a brute-force scorer on a
-   toy KG inside `tests/`.
-5. **Task 6 — end-to-end smoke**: a trivial baseline that ranks tail
-   candidates by relation-conditional frequency, just to prove the harness
-   produces sensible numbers.
+Day 1–2 is done. We are moving into **Week 1, Day 3–5: KGE baselines**.
 
-Once Tasks 4–6 land, Week 1 Day 1–2 of the plan is genuinely done and we
-move into Day 3–5 (PyKEEN KGE training).
+1. Re-read this file and `kg_llm_project_plan.md` Week 1 Day 3–5.
+2. Cover the theory first (Tudor's standing request — intuition + key equations):
+   KGE training loss, negative sampling, self-adversarial negative sampling
+   (NSSA, Sun et al. 2019), margin vs cross-entropy objectives.
+3. Train **ComplEx, RotatE, TransE, QuatE** on FB15k-237 with PyKEEN, standard
+   hyperparameters. Heavy training runs on Kaggle T4 (sync via GitHub), not the
+   laptop. Sanity target: ComplEx ≈ 0.32 MRR, RotatE ≈ 0.34 filtered.
+4. Wrap each trained model as a `Scorer` (see decision #9) so it drops straight
+   into `evaluate()`; cross-check our harness numbers against PyKEEN's own
+   evaluator on at least one model (must agree — validates both).
+5. **Save the trained embeddings** — they're the raw material for Week 3's
+   KGE-mined hard negatives (the project's original angle).
+
+Reminder of the working agreement: pause after meaningful units for Tudor's
+review; he runs all git/pip/training on his side; explain the theory as we build.
