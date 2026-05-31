@@ -1,0 +1,44 @@
+# RotatE on FB15k-237 — starting config (tune from here).
+# RotatE represents each relation as a rotation in complex space; it captures
+# symmetry, inversion, and composition. Usually the strongest of these four.
+name: rotate_fb15k237
+model: RotatE
+random_seed: 42
+
+model_kwargs:
+  embedding_dim: 256
+
+# Sampled-fakes style, with MANY fakes per true triple — RotatE's loss is built to
+# exploit them.
+training_loop: slcwa
+negative_sampler: basic
+negative_sampler_kwargs:
+  num_negs_per_pos: 64
+
+# The "focus on the hard fakes" style from the theory (self-adversarial negative
+# sampling, Sun et al. 2019). `adversarial_temperature` is how sharply the model
+# concentrates on the fakes it currently finds believable (higher = sharper focus);
+# `margin` is the gap it tries to open between true and fake.
+loss: nssa
+loss_kwargs:
+  margin: 9.0
+  adversarial_temperature: 1.0
+
+optimizer: Adam
+optimizer_kwargs:
+  lr: 0.0001          # RotatE likes a small learning rate; large ones destabilize it
+
+training_kwargs:
+  num_epochs: 100
+  batch_size: 1024
+
+stopper: early
+stopper_kwargs:
+  frequency: 5
+  patience: 3
+  relative_delta: 0.002
+  metric: inverse_harmonic_mean_rank
+
+wandb:
+  project: kg-llm-completion
+  tags: [phase1, kge, rotate, fb15k237]

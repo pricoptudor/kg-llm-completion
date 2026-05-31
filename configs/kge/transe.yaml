@@ -1,0 +1,41 @@
+# TransE on FB15k-237 — starting config (tune from here).
+# TransE is the distance model: it wants head + relation ~= tail. It can't handle
+# symmetric or 1-to-many relations well, so expect it to trail ComplEx/RotatE.
+name: transe_fb15k237
+model: TransE
+random_seed: 42
+
+model_kwargs:
+  embedding_dim: 256
+  scoring_fct_norm: 1   # measure head+relation-vs-tail distance with L1 (sum of |.|)
+
+# Sampled-fakes style: for each true triple, draw a few corrupted ones.
+training_loop: slcwa
+negative_sampler: basic
+negative_sampler_kwargs:
+  num_negs_per_pos: 32   # 32 fakes per true triple
+
+# The MARGIN style from the theory: only penalize when a true triple fails to beat
+# its fake by `margin`; once it does, stop pushing.
+loss: marginranking
+loss_kwargs:
+  margin: 5.0
+
+optimizer: Adam
+optimizer_kwargs:
+  lr: 0.0005
+
+training_kwargs:
+  num_epochs: 100
+  batch_size: 1024
+
+stopper: early
+stopper_kwargs:
+  frequency: 5
+  patience: 3
+  relative_delta: 0.002
+  metric: inverse_harmonic_mean_rank
+
+wandb:
+  project: kg-llm-completion
+  tags: [phase1, kge, transe, fb15k237]
