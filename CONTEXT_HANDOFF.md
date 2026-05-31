@@ -15,8 +15,13 @@ session, plus the working agreements that aren't visible from code.
 - **Pair-programming mode.** Claude writes code directly into the workspace
   folder with step-by-step explanations. Tudor reviews and makes architectural
   changes / pushes back when warranted.
-- **Theory depth: intuition + key equations.** Not full derivations from first
-  principles, but no hand-waving either. Reference the relevant paper.
+- **Theory depth: intuition + key equations — but explain from the ground up.**
+  Not full derivations, no hand-waving. CRITICAL (2026-05-31 feedback): do NOT
+  drop unexplained jargon or bare symbols. Define every term/symbol the first
+  time it appears, lead with intuition and a concrete running example, and only
+  then show the equation. Tudor is strong at math but new to KGE/LLM-training
+  vocabulary — a dense block forced him to look terms up separately, which
+  defeats the learning goal. Reference the relevant paper.
 - **Honest pushback.** If Tudor is about to do something wrong or suboptimal,
   say so directly. Concrete over abstract advice.
 - **Git lives on Tudor's machine.** The sandbox cannot reach GitHub (proxy
