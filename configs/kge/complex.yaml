@@ -1,37 +1,36 @@
-# ComplEx on FB15k-237 — starting config (a sane baseline to tune from, not the
-# final tuned recipe). Every knob is annotated against the training theory.
+# ComplEx on FB15k-237 — starting config (tune from here).
+# This is the ORIGINAL ComplEx recipe (Trouillon et al. 2016): negative sampling
+# with a logistic (softplus) loss. We deliberately use sLCWA, not LCWA — see the
+# note below — so the model trains BOTH head and tail prediction natively, with no
+# inverse-relation augmentation (which renumbers relations and breaks our adapter).
 name: complex_fb15k237
 model: ComplEx
 random_seed: 42
 
 model_kwargs:
-  # Size of each entity/relation vector. ComplEx vectors are complex numbers
-  # (a real + an imaginary part), so 256 here means 512 real numbers per entity.
+  # Complex vectors store a real + imaginary part, so 256 here = 512 reals/entity.
   embedding_dim: 256
 
-# Train BOTH directions: also learn each relation's inverse. Essential under LCWA
-# on FB15k-237 — without it the model only ever learns to predict tails, head-side
-# ranking stays near-random, and the pooled MRR is roughly halved.
-create_inverse_triples: true
+# WHY sLCWA and not LCWA: LCWA only ever trains tail prediction, so head-side MRR
+# collapses. The usual LCWA fix is inverse triples — but that augments the relation
+# set, renumbers relation IDs, and is INCOMPATIBLE with our PyKEENScorer (which
+# drives the model with our exact relation IDs). sLCWA samples fake heads AND tails,
+# so the model learns both directions and our eval harness / cross-check stay valid.
+training_loop: slcwa
+negative_sampler: basic
+negative_sampler_kwargs:
+  num_negs_per_pos: 50   # 50 sampled fakes per true triple
 
-# HOW we feed the model. "lcwa" = instead of sampling a few fake tails, for each
-# (head, relation) we score EVERY entity as a candidate tail at once and treat the
-# known-true ones as the positives. Denser learning signal; it's ComplEx's happy
-# place. (The alternative, "slcwa", is the sample-a-few-fakes style — we'll use
-# that for RotatE, which is built around the hard-fakes idea.)
-training_loop: lcwa
-
-# The loss = the classification style from the theory: turn scores into
-# true/false probabilities and punish wrong confidence (cross-entropy).
-loss: crossentropy
+# Logistic loss (the classification style): push true scores up, sampled-fake
+# scores down. This is the loss paired with sLCWA; `crossentropy` is for LCWA only.
+loss: softplus
 
 optimizer: Adam
 optimizer_kwargs:
-  lr: 0.005
+  lr: 0.001
 
-# Regularization: the gentle downward pressure on vector size that stops ComplEx
-# from memorizing. p=3 is the "N3" regularizer (Lacroix et al. 2018) that ComplEx
-# needs to reach its published ~0.32 MRR. Tune `weight` if it over/under-fits.
+# Size-pressure regularizer (p=3 ~ the N3 of Lacroix 2018) so ComplEx generalizes
+# rather than memorizing. Tune `weight` if it over/under-fits.
 regularizer: lp
 regularizer_kwargs:
   p: 3
@@ -41,9 +40,8 @@ training_kwargs:
   num_epochs: 100
   batch_size: 1024
 
-# Early stopping: check validation MRR every 5 epochs; if it hasn't improved
-# meaningfully for 3 checks in a row, stop and keep the BEST checkpoint, not the
-# last. (metric name is PyKEEN's internal name for MRR.)
+# Check validation MRR every 5 epochs; stop after 3 checks without real improvement
+# and keep the BEST checkpoint, not the last.
 stopper: early
 stopper_kwargs:
   frequency: 5
@@ -51,7 +49,6 @@ stopper_kwargs:
   relative_delta: 0.002
   metric: inverse_harmonic_mean_rank
 
-# Weights & Biases logging. Set the whole block to null to disable.
 wandb:
   project: kg-llm-completion
   tags: [phase1, kge, complex, fb15k237]

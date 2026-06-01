@@ -4,6 +4,13 @@ Because we trained on OUR ID space (see scripts/train_kge.py), the scores PyKEEN
 returns for "all entities" are already indexed exactly like our data loader and
 filtered index — so this adapter is a thin shim, no ID translation needed.
 
+WARNING — do NOT use this adapter on a model trained with `create_inverse_triples`.
+Inverse triples renumber relations inside PyKEEN, so driving the model with our
+relation IDs would silently score the wrong relations (we saw this: PyKEEN's own
+eval read MRR 0.22 while this adapter read 0.005). The cross-check script catches
+it, but the rule is simpler: train both directions via sLCWA negative sampling,
+not via inverse triples, so this adapter stays valid.
+
 PyKEEN gives us two batch scoring calls:
   - `model.score_t(hr_batch)`: hr_batch is (batch, 2) of [head_id, relation_id];
     returns (batch, num_entities) scores over all candidate tails.
