@@ -1,6 +1,6 @@
-# QuatE on FB15k-237 — starting config (tune from here).
-# QuatE generalizes ComplEx from complex numbers to quaternions (4 components per
-# coordinate). This is the one that connects to your PhD's Clifford-algebra spine.
+# QuatE on FB15k-237 — LCWA (1-vs-all) + inverse triples (same regime as ComplEx).
+# QuatE generalizes ComplEx to quaternions (4 components/coordinate) and connects
+# to your PhD's Clifford-algebra spine.
 name: quate_fb15k237
 model: QuatE
 random_seed: 42
@@ -8,19 +8,17 @@ random_seed: 42
 model_kwargs:
   embedding_dim: 256   # quaternion dim; 4 real numbers per coordinate
 
-# sLCWA for the same reason as ComplEx: train both directions via negative sampling
-# rather than LCWA + inverse triples (which renumbers relations and breaks our
-# PyKEENScorer adapter / cross-check).
-training_loop: slcwa
-negative_sampler: basic
-negative_sampler_kwargs:
-  num_negs_per_pos: 50
+# Inverse triples for the same reason as ComplEx: LCWA trains tails only, so we add
+# each relation's inverse to also train head prediction. Renumbers relations inside
+# PyKEEN -> report PyKEEN's metrics; cross-check defers to PyKEEN for inverse models.
+create_inverse_triples: true
 
-loss: softplus
+training_loop: lcwa
+loss: crossentropy
 
 optimizer: Adam
 optimizer_kwargs:
-  lr: 0.001
+  lr: 0.005
 
 regularizer: lp
 regularizer_kwargs:

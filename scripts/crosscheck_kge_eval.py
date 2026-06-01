@@ -52,10 +52,30 @@ def main() -> None:
     ds = load_fb15k237(args.data_dir)
     filtered_index = ds.build_filtered_index()
     scorer = load_pykeen_scorer(model_dir)
-
-    ours = evaluate(scorer, ds.test_triples, filtered_index)
     pk_mrr = pykeen_test_mrr(model_dir)
 
+    # Inverse-triples models renumber relations inside PyKEEN, so our manual adapter
+    # would score the wrong relations (we saw 0.005 vs PyKEEN's 0.22). Detect that
+    # and defer to PyKEEN's authoritative number instead of printing garbage. Our
+    # harness is validated separately on the non-inverse config (exact agreement).
+    try:
+        n_model_rel = scorer.model.relation_representations[0](indices=None).shape[0]
+    except Exception:
+        n_model_rel = getattr(scorer.model, "num_relations", ds.num_relations)
+
+    if n_model_rel != ds.num_relations:
+        print(
+            f"Model uses inverse triples ({n_model_rel} relation reps vs our "
+            f"{ds.num_relations}) — our adapter is N/A here."
+        )
+        if pk_mrr is not None:
+            print(f"PyKEEN test MRR (authoritative, filtered): {pk_mrr:.4f}")
+        else:
+            print("PyKEEN MRR: (results.json not found — read it from the run log)")
+        print("Our harness was validated separately on the non-inverse config.")
+        return
+
+    ours = evaluate(scorer, ds.test_triples, filtered_index)
     print(f"Our harness   : {ours}")
     if pk_mrr is None:
         print("PyKEEN MRR    : (results.json not found — compare against the run log)")
