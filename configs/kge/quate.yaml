@@ -20,11 +20,9 @@ optimizer: Adam
 optimizer_kwargs:
   lr: 0.005
 
-regularizer: lp
-regularizer_kwargs:
-  p: 3
-  weight: 1.0e-5
-
+# NOTE: PyKEEN's QuatE does NOT accept a generic `regularizer` kwarg (it raises
+# TypeError: unexpected keyword argument 'regularizer'). QuatE applies its own
+# normalization internally, so we omit the Lp block that ComplEx uses.
 training_kwargs:
   num_epochs: 100
   batch_size: 1024

@@ -13,7 +13,7 @@ model_kwargs:
 training_loop: slcwa
 negative_sampler: basic
 negative_sampler_kwargs:
-  num_negs_per_pos: 64
+  num_negs_per_pos: 128   # bumped 64->128; RotatE benefits from more negatives
 
 # The "focus on the hard fakes" style from the theory (self-adversarial negative
 # sampling, Sun et al. 2019). `adversarial_temperature` is how sharply the model
@@ -26,10 +26,12 @@ loss_kwargs:
 
 optimizer: Adam
 optimizer_kwargs:
-  lr: 0.0001          # RotatE likes a small learning rate; large ones destabilize it
+  # Bumped 1e-4 -> 5e-4: at 1e-4 RotatE was still improving at epoch 100 (best
+  # val MRR was the LAST epoch, loss still 0.5) — i.e. undertrained, not unstable.
+  lr: 0.0005
 
 training_kwargs:
-  num_epochs: 100
+  num_epochs: 150     # was 100 and hadn't converged; give it more room
   batch_size: 1024
 
 stopper: early

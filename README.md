@@ -9,22 +9,29 @@ An empirical study with post-training (SFT + DPO) and KGE-mined hard negatives.
 
 Knowledge-graph completion (link prediction) has historically been dominated by embedding methods — ComplEx, RotatE, QuatE — that score `(head, relation, tail)` triples in geometric space. Modern LLMs offer a different lever: they bring world knowledge from pretraining. This project measures, on standard benchmarks, where each paradigm wins, and proposes a recipe — *KGE-mined hard negatives for DPO* — that combines the strengths of both.
 
-## Results (placeholder)
+## Results
 
-Filtered Hits@k / MRR on FB15k-237 test split.
+Filtered MRR / Hits@k on FB15k-237 test split (head+tail pooled). KGE metrics are
+from PyKEEN's evaluator; our independent harness is cross-checked against it and
+agrees exactly on the non-inverse models. These are dim-256 starting baselines —
+a bit under published numbers (which use much larger dims) and still being tuned.
 
-| Method                          | MRR  | H@1  | H@3  | H@10 |
-| ------------------------------- | ---- | ---- | ---- | ---- |
-| TransE                          | —    | —    | —    | —    |
-| ComplEx                         | —    | —    | —    | —    |
-| RotatE                          | —    | —    | —    | —    |
-| QuatE                           | —    | —    | —    | —    |
-| Qwen2.5-1.5B (zero-shot)        | —    | —    | —    | —    |
-| Qwen2.5-1.5B SFT                | —    | —    | —    | —    |
-| Qwen2.5-1.5B SFT + DPO (random) | —    | —    | —    | —    |
-| Qwen2.5-1.5B SFT + DPO (KGE)    | —    | —    | —    | —    |
+| Method                          | MRR   | H@1   | H@3   | H@10  |
+| ------------------------------- | ----- | ----- | ----- | ----- |
+| Frequency baseline              | 0.233 | 0.170 | 0.250 | 0.354 |
+| TransE                          | 0.289 | 0.195 | 0.324 | 0.476 |
+| ComplEx                         | _re-run pending_ | | | |
+| RotatE                          | _retuning_ | | | |
+| QuatE                           | _pending_ | | | |
+| Qwen2.5-1.5B (zero-shot)        | —     | —     | —     | —     |
+| Qwen2.5-1.5B SFT                | —     | —     | —     | —     |
+| Qwen2.5-1.5B SFT + DPO (random) | —     | —     | —     | —     |
+| Qwen2.5-1.5B SFT + DPO (KGE)    | —     | —     | —     | —     |
 
-Phase 2 (Hetionet) table forthcoming.
+Notes: ComplEx must be re-run with the current LCWA+inverse config (the earlier
+artifact predated that fix; prelim MRR ≈ 0.22). RotatE was undertrained at dim
+256 / lr 1e-4 and is retuning (lr 5e-4, 128 negs, 150 epochs). Phase 2 (Hetionet)
+table forthcoming.
 
 ## Reproduction
 
