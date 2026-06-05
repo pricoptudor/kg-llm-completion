@@ -36,8 +36,9 @@ session, plus the working agreements that aren't visible from code.
 
 ## Where we are in the plan
 
-We have **completed Phase 1, Week 1, Day 1–2** of the 8-week plan and are
-starting **Day 3–5 (PyKEEN KGE baseline training)**.
+We have **completed Phase 1, Week 1, Day 1–5** of the 8-week plan (data + filtered
+eval harness + all four KGE baselines trained) and are starting **Day 6–7: the LLM
+eval harness + zero-shot Qwen2.5-1.5B baseline**.
 
 ### Done
 
@@ -198,8 +199,6 @@ purpose — don't drift into something else by accident.
 
 ## Conceptual context still to cover (queued)
 
-- KGE training loss (negative sampling, NSSA — Sun et al. 2019); margin loss
-  vs cross-entropy with negatives. (Day 3–5, coming next.)
 - SFT loss masking (only on assistant turn).
 - DPO loss derivation from RLHF: $\mathcal{L}_{\text{DPO}} = -\mathbb{E}[\log \sigma(\beta (\log \pi_\theta(y_w|x)/\pi_\text{ref}(y_w|x) - \log \pi_\theta(y_l|x)/\pi_\text{ref}(y_l|x)))]$.
 - Hard negative mining for DPO — the "clever bit" of the project.
@@ -220,6 +219,11 @@ purpose — don't drift into something else by accident.
 | `src/kg_llm/eval/baselines.py`        | `FrequencyBaseline` (harness sanity floor).        |
 | `tests/test_ranking.py`               | Brute-force toy verification of the harness.       |
 | `scripts/run_frequency_baseline.py`   | End-to-end Day 1–2 smoke entry point.              |
+| `scripts/train_kge.py`                | PyKEEN KGE trainer (our ID space; inverse-triples knob). |
+| `configs/kge/*.yaml`                  | Per-model KGE configs (ComplEx/RotatE/TransE/QuatE). |
+| `src/kg_llm/kge/pykeen_scorer.py`     | Adapter: trained PyKEEN model -> our `Scorer`.     |
+| `scripts/crosscheck_kge_eval.py`      | Our-harness vs PyKEEN eval; defers on inverse models. |
+| `docs/kaggle_runbook.md`              | Step-by-step Kaggle GPU training runbook.          |
 | `reports/writeup_notes.md`            | Running log of findings for the technical report.  |
 | `CONTEXT_HANDOFF.md`                  | This file.                                         |
 
@@ -227,20 +231,25 @@ purpose — don't drift into something else by accident.
 
 ## Next concrete action when picking up
 
-Day 1–2 is done. We are moving into **Week 1, Day 3–5: KGE baselines**.
+Week 1 Day 1–5 is done: data loader, filtered-eval harness, frequency baseline,
+and all four KGE baselines trained on Kaggle (filtered MRR, dim 256): **RotatE
+0.324, QuatE 0.304, TransE 0.289, ComplEx 0.222**. Each `artifacts/kge/<name>/`
+has `embeddings.pt` (raw material for Week 3 mining). KGE metrics come from
+PyKEEN's evaluator; our harness is validated by exact agreement on a non-inverse
+model and is incompatible with inverse-triples models (see Lessons).
 
-1. Re-read this file and `kg_llm_project_plan.md` Week 1 Day 3–5.
-2. Cover the theory first (Tudor's standing request — intuition + key equations):
-   KGE training loss, negative sampling, self-adversarial negative sampling
-   (NSSA, Sun et al. 2019), margin vs cross-entropy objectives.
-3. Train **ComplEx, RotatE, TransE, QuatE** on FB15k-237 with PyKEEN, standard
-   hyperparameters. Heavy training runs on Kaggle T4 (sync via GitHub), not the
-   laptop. Sanity target: ComplEx ≈ 0.32 MRR, RotatE ≈ 0.34 filtered.
-4. Wrap each trained model as a `Scorer` (see decision #9) so it drops straight
-   into `evaluate()`; cross-check our harness numbers against PyKEEN's own
-   evaluator on at least one model (must agree — validates both).
-5. **Save the trained embeddings** — they're the raw material for Week 3's
-   KGE-mined hard negatives (the project's original angle).
+Next is **Week 1, Day 6–7: the LLM evaluation harness + zero-shot baseline.**
+
+1. Re-read this file and `kg_llm_project_plan.md` Week 1 Day 6–7.
+2. Theory first (plain language, define every term, intuition before equations):
+   how we score an LLM for KG completion via per-candidate log-prob,
+   log p(tail | prompt), NOT generation; why that's apples-to-apples with KGE
+   ranking; batching over the shared prompt prefix.
+3. Build an LLM `Scorer` (same protocol as the KGE one) that computes the model's
+   log-prob of each candidate entity name and ranks by it, reusing the exact
+   `evaluate()` harness — the "identical ruler" we validated.
+4. Run zero-shot Qwen2.5-1.5B-Instruct through it. Expect terrible numbers — that's
+   the documented zero-shot baseline and the floor SFT/DPO must beat.
 
 Reminder of the working agreement: pause after meaningful units for Tudor's
 review; he runs all git/pip/training on his side; explain the theory as we build.

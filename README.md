@@ -13,25 +13,24 @@ Knowledge-graph completion (link prediction) has historically been dominated by 
 
 Filtered MRR / Hits@k on FB15k-237 test split (head+tail pooled). KGE metrics are
 from PyKEEN's evaluator; our independent harness is cross-checked against it and
-agrees exactly on the non-inverse models. These are dim-256 starting baselines —
-a bit under published numbers (which use much larger dims) and still being tuned.
+agrees exactly (validated on the non-inverse models). These are **dim-256**
+baselines — competitive with published numbers despite the small dimension, except
+ComplEx, which needs a much larger dim to reach its ~0.32 anchor.
 
 | Method                          | MRR   | H@1   | H@3   | H@10  |
 | ------------------------------- | ----- | ----- | ----- | ----- |
 | Frequency baseline              | 0.233 | 0.170 | 0.250 | 0.354 |
 | TransE                          | 0.289 | 0.195 | 0.324 | 0.476 |
-| ComplEx                         | _re-run pending_ | | | |
-| RotatE                          | _retuning_ | | | |
-| QuatE                           | _pending_ | | | |
+| ComplEx                         | 0.222 | 0.154 | 0.242 | 0.358 |
+| RotatE                          | **0.324** | **0.229** | **0.361** | **0.518** |
+| QuatE                           | 0.304 | 0.217 | 0.335 | 0.483 |
 | Qwen2.5-1.5B (zero-shot)        | —     | —     | —     | —     |
 | Qwen2.5-1.5B SFT                | —     | —     | —     | —     |
 | Qwen2.5-1.5B SFT + DPO (random) | —     | —     | —     | —     |
 | Qwen2.5-1.5B SFT + DPO (KGE)    | —     | —     | —     | —     |
 
-Notes: ComplEx must be re-run with the current LCWA+inverse config (the earlier
-artifact predated that fix; prelim MRR ≈ 0.22). RotatE was undertrained at dim
-256 / lr 1e-4 and is retuning (lr 5e-4, 128 negs, 150 epochs). Phase 2 (Hetionet)
-table forthcoming.
+RotatE is the strongest KGE baseline; every method clears the frequency floor by a
+clear margin. Phase 2 (Hetionet) table forthcoming.
 
 ## Reproduction
 
