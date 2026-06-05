@@ -180,9 +180,10 @@ Then in the notebook:
 !python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3.5-2B --data-dir /kaggle/input/fb15k237 --num-test 1000
 ```
 
-- If the KV-cache path errors on this image's transformers version, add
-  `--no-prefix-cache` — it falls back to the re-encode path (slower, identical
-  numbers; the unit test proves they match).
+- Scoring is one forward pass per candidate batch (no fragile KV-cache surgery —
+  that isn't portable across Qwen3's Cache API and Qwen3.5's linear attention). If
+  1000 triples won't fit the session based on the dry-run timing, lower `--num-test`
+  (e.g. 500) or `--cand-batch-size` if you hit OOM.
 - **Output:** the script only prints a metrics line — no big files to download.
   Copy the `MRR=… H@1=… H@3=… H@10=…` line for each model and paste it back; both
   go into the README table. Expect both **below the 0.23 frequency floor** — that's

@@ -30,11 +30,6 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cand-batch-size", type=int, default=128)
     ap.add_argument("--no-length-norm", action="store_true")
-    ap.add_argument(
-        "--no-prefix-cache",
-        action="store_true",
-        help="disable KV-cache prefix reuse (slower, max compatibility) if the cache API errors",
-    )
     args = ap.parse_args()
 
     ds = load_fb15k237(args.data_dir)
@@ -51,7 +46,6 @@ def main() -> None:
         ds,
         length_normalize=not args.no_length_norm,
         cand_batch_size=args.cand_batch_size,
-        use_prefix_cache=not args.no_prefix_cache,
     )
 
     # Fixed random subset of test triples (reproducible via seed). The SAME subset
