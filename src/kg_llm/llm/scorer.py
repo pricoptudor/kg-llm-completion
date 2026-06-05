@@ -13,14 +13,14 @@ as the continuation:
 Higher (closer to 0) = more plausible. We rank entities by this score and feed it
 to evaluate() exactly like a KGE score matrix.
 
-On efficiency: we score candidates in batches (cand_batch_size at a time), each a
-single forward pass. We do NOT hand-roll prefix KV-cache reuse — it isn't portable
-across architectures (e.g. Qwen3.5 uses linear attention, which has no expandable
-key/value cache) or across transformers' evolving Cache API. If full-test runs ever
-need to be faster, the right tool is vLLM, which does prefix caching internally.
-
-Length normalization (mean log-prob per token, default) removes the bias against
-multi-token entity names; `length_normalize=False` gives the raw sum.
+Performance notes:
+- Candidate names are tokenized ONCE into a padded matrix at init.
+- Scoring is fully vectorized per candidate batch: one forward pass, one gather,
+  one masked sum. We never call .item() inside the candidate loop — doing so forces
+  a GPU->CPU sync per candidate (~14.5k per query) and was a ~30x slowdown.
+- We do not hand-roll prefix KV-cache reuse: it isn't portable across architectures
+  (Qwen3.5 uses linear attention) or transformers' Cache API. For faster full-test
+  runs, the right tool is vLLM (internal prefix caching).
 """
 
 from __future__ import annotations
@@ -61,13 +61,28 @@ class LLMScorer:
         if self.tok.pad_token_id is None:
             self.tok.pad_token = self.tok.eos_token
 
-        # Answer tokens for every entity name, precomputed once. A leading space
-        # makes the name tokenize as a continuation (" Ulm", matching its place
-        # after the prompt's trailing colon).
-        self._cand_tokens: list[list[int]] = [
+        # Tokenize every entity name once (leading space => continuation tokens),
+        # then pack into a padded (num_entities, Lmax) matrix plus a length mask.
+        cand_tokens = [
             self.tok(" " + dataset.entity_name(i), add_special_tokens=False).input_ids
             for i in range(dataset.num_entities)
         ]
+        E = dataset.num_entities
+        lmax = max((len(t) for t in cand_tokens), default=1) or 1
+
+        matrix = torch.zeros((E, lmax), dtype=torch.long)
+        mask = torch.zeros((E, lmax))
+        lengths = torch.zeros(E, dtype=torch.long)
+        for i, t in enumerate(cand_tokens):
+            a = len(t)
+            if a:
+                matrix[i, :a] = torch.tensor(t, dtype=torch.long)
+                mask[i, :a] = 1.0
+            lengths[i] = a
+
+        self._cand_matrix = matrix.to(self.device)
+        self._cand_mask = mask.to(self.device)
+        self._cand_len = lengths.to(self.device)
 
     @torch.no_grad()
     def _score_against_prefix(self, prefix: str) -> torch.Tensor:
@@ -75,39 +90,38 @@ class LLMScorer:
         prefix_ids = self.tok(prefix, add_special_tokens=True).input_ids
         plen = len(prefix_ids)
         E = self.ds.num_entities
-        scores = torch.full((E,), float("-inf"))
         dev = self.device
+        prefix_t = torch.tensor(prefix_ids, dtype=torch.long, device=dev)
+        scores = torch.empty(E, device=dev)
 
         for start in range(0, E, self.cand_batch_size):
-            cand = list(range(start, min(start + self.cand_batch_size, E)))
-            seqs = [prefix_ids + self._cand_tokens[i] for i in cand]
-            ans_lens = [len(self._cand_tokens[i]) for i in cand]
-            max_a = max(max(ans_lens), 1)
-            maxlen = plen + max_a
+            end = min(start + self.cand_batch_size, E)
+            B = end - start
+            lens = self._cand_len[start:end]
+            max_a = int(lens.max())
+            if max_a == 0:
+                scores[start:end] = float("-inf")
+                continue
 
-            input_ids = torch.full((len(seqs), maxlen), self.tok.pad_token_id, dtype=torch.long)
-            attn = torch.zeros((len(seqs), maxlen), dtype=torch.long)
-            for j, s in enumerate(seqs):
-                input_ids[j, : len(s)] = torch.tensor(s, dtype=torch.long)
-                attn[j, : len(s)] = 1
-            input_ids, attn = input_ids.to(dev), attn.to(dev)
+            cand_block = self._cand_matrix[start:end, :max_a]  # (B, max_a)
+            mask_block = self._cand_mask[start:end, :max_a]  # (B, max_a)
+
+            input_ids = torch.cat([prefix_t.unsqueeze(0).expand(B, plen), cand_block], dim=1)
+            attn = torch.cat([torch.ones(B, plen, device=dev), mask_block], dim=1).long()
 
             logits = self.model(input_ids=input_ids, attention_mask=attn).logits
             # Answer token at sequence position p is predicted by logits at p-1.
             # All candidates share the prefix, so answer positions start at plen-1.
             sub_lp = torch.log_softmax(logits[:, plen - 1 : plen - 1 + max_a, :].float(), dim=-1)
 
-            for j, i in enumerate(cand):
-                toks = self._cand_tokens[i]
-                a = len(toks)
-                if a == 0:
-                    continue
-                pos = torch.arange(a, device=dev)
-                t = torch.tensor(toks, device=dev)
-                lp = sub_lp[j, pos, t].sum()
-                scores[i] = (lp / a if self.length_normalize else lp).item()
+            # Gather the log-prob of each candidate's own answer tokens, mask pads.
+            tok_lp = sub_lp.gather(2, cand_block.unsqueeze(-1)).squeeze(-1)  # (B, max_a)
+            summed = (tok_lp * mask_block).sum(dim=1)  # (B,)
+            if self.length_normalize:
+                summed = summed / lens.clamp(min=1).float()
+            scores[start:end] = summed
 
-        return scores
+        return scores.cpu()
 
     @torch.no_grad()
     def score_tails(self, heads: torch.Tensor, relations: torch.Tensor) -> torch.Tensor:
