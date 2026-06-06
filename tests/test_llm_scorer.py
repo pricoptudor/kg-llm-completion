@@ -8,7 +8,7 @@ its tokens — computable by hand and asserted against.
 import torch
 import torch.nn as nn
 
-from kg_llm.llm.scorer import LLMScorer
+from kg_llm.llm.scorer import LLMScorer, _realistic_rank
 
 
 class _Out:
@@ -93,3 +93,19 @@ def test_sum_not_mean_when_normalization_off():
     scorer, lp, ids = _make({"d": 0.5, "e": 0.5}, length_normalize=False)
     scores = scorer.score_tails(torch.tensor([0]), torch.tensor([0]))[0]
     assert torch.allclose(scores[2], lp[ids["d"]] + lp[ids["e"]], atol=1e-5)  # raw sum
+
+
+def test_score_candidates_alignment():
+    """score_tail_candidates returns scores aligned to the candidate order given."""
+    scorer, lp, ids = _make({"a": 2.0, "b": 1.0, "d": 0.5, "e": 0.5})
+    s = scorer.score_tail_candidates(0, 0, [2, 0, 1])  # order: entity 2, 0, 1
+    assert torch.allclose(s[0], (lp[ids["d"]] + lp[ids["e"]]) / 2, atol=1e-5)  # entity 2
+    assert torch.allclose(s[1], lp[ids["a"]], atol=1e-5)  # entity 0
+    assert torch.allclose(s[2], lp[ids["b"]], atol=1e-5)  # entity 1
+
+
+def test_realistic_rank():
+    # gold at index 0 (0.5); one negative beats it, one ties -> 1 + 1 + 0.5 = 2.5
+    assert _realistic_rank(torch.tensor([0.5, 0.9, 0.2, 0.5])) == 2.5
+    # gold strictly best -> rank 1
+    assert _realistic_rank(torch.tensor([0.9, 0.5, 0.2])) == 1.0

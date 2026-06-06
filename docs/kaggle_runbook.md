@@ -180,10 +180,15 @@ Then in the notebook:
 !python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3.5-2B --data-dir /kaggle/input/fb15k237 --num-test 1000
 ```
 
-- Scoring is one forward pass per candidate batch (no fragile KV-cache surgery —
-  that isn't portable across Qwen3's Cache API and Qwen3.5's linear attention). If
-  1000 triples won't fit the session based on the dry-run timing, lower `--num-test`
-  (e.g. 500) or `--cand-batch-size` if you hit OOM.
+- **Sampled ranking.** Scoring all 14,541 entities per query is infeasible on a
+  T4, so the gold is ranked against `--num-candidates` candidates (default 256 =
+  gold + 255 sampled negatives). This makes a 1000-triple run take minutes. The
+  metric is over 256 candidates, so it is NOT directly comparable to KGE's
+  full-14,541 MRR — fine for the zero-shot floor; for a head-to-head later we run
+  KGE under the same sampling. Raise `--num-candidates` (e.g. 1000) for fidelity at
+  more cost; lower `--cand-batch-size` if you hit OOM.
+- **Check the device print.** The script prints `CUDA available: ...` and
+  `model device: ...` — if it says CPU, your notebook's GPU accelerator is off.
 - **Output:** the script only prints a metrics line — no big files to download.
   Copy the `MRR=… H@1=… H@3=… H@10=…` line for each model and paste it back; both
   go into the README table. Expect both **below the 0.23 frequency floor** — that's
