@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import os
 
-# Kaggle's GPU option is "T4 x2" (two GPUs). With >1 GPU visible, HF Trainer wraps
-# the model in DataParallel, which clashes with device_map="auto" (it had sharded
-# the model across both GPUs) -> "parameters on cuda:1" error. QLoRA of a 1.7B
-# model fits on ONE T4, so we pin to a single visible GPU before importing torch.
-# (Export CUDA_VISIBLE_DEVICES yourself to override, e.g. for a bigger model.)
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+# Use a SINGLE GPU. Kaggle "T4 x2" exposes two GPUs AND pre-sets
+# CUDA_VISIBLE_DEVICES, so HF Trainer would wrap the model in DataParallel and clash
+# with device_map="auto" -> "parameters on cuda:1". QLoRA of a 1.7B model fits on
+# one T4, so we force the visible set down to its first entry (before importing
+# torch). Must be a hard assignment — setdefault won't override Kaggle's value.
+os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"
 
 import argparse
 from pathlib import Path
