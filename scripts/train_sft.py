@@ -15,6 +15,15 @@ Then the full run:
 
 from __future__ import annotations
 
+import os
+
+# Kaggle's GPU option is "T4 x2" (two GPUs). With >1 GPU visible, HF Trainer wraps
+# the model in DataParallel, which clashes with device_map="auto" (it had sharded
+# the model across both GPUs) -> "parameters on cuda:1" error. QLoRA of a 1.7B
+# model fits on ONE T4, so we pin to a single visible GPU before importing torch.
+# (Export CUDA_VISIBLE_DEVICES yourself to override, e.g. for a bigger model.)
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 import argparse
 from pathlib import Path
 
