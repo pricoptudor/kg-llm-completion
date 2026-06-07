@@ -194,6 +194,27 @@ Then in the notebook:
   go into the README table. Expect both **below the 0.23 frequency floor** — that's
   the zero-shot floor SFT/DPO will climb from, not a bug.
 
+### If Qwen3.5-2B crashes (`CUDA error: unspecified launch failure`)
+
+Qwen3.5 is a linear-attention model; without its kernels it runs an unstable
+pure-torch fallback (you'll see "The fast path is not available ... Falling back to
+torch implementation"). Try, in order:
+
+```python
+# 1) install the linear-attention kernels so it uses the stable fast path
+!pip install -q flash-linear-attention causal-conv1d
+
+# 2) if it still crashes, get the REAL error location (turns async into sync)
+import os; os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+# ...then re-run the Qwen3.5 command and paste the new traceback
+
+# 3) or just shrink the batch — sometimes avoids the fallback's bad path
+!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3.5-2B --data-dir /kaggle/input/fb15k237 --num-test 1000 --cand-batch-size 64
+```
+
+Qwen3-1.7B (standard attention) is the stable anchor; if Qwen3.5 stays flaky,
+report Qwen3-1.7B and note the instability.
+
 ## Quotas & gotchas
 
 - GPU session ≈ 9h; weekly GPU quota ≈ 30h (your AIMO boost helps). Doing ComplEx

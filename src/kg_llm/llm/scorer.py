@@ -28,6 +28,7 @@ Implementation notes:
 from __future__ import annotations
 
 import torch
+from tqdm.auto import tqdm
 
 from kg_llm.data.fb15k237 import FB15k237
 
@@ -194,7 +195,7 @@ def evaluate_llm_sampled(
     k = num_candidates - 1
     ranks: list[float] = []
 
-    for h, r, t in triples.tolist():
+    for h, r, t in tqdm(triples.tolist(), desc="LLM eval", unit="triple"):
         excl = set(filtered_index.true_tails(h, r).tolist())
         excl.add(t)
         cand = torch.tensor([t] + _sample_negatives(num_entities, k, excl, gen), dtype=torch.long)
