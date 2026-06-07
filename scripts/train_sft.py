@@ -65,7 +65,13 @@ def main() -> None:
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        cfg["model"], quantization_config=bnb, device_map="auto"
+        cfg["model"],
+        quantization_config=bnb,
+        device_map="auto",
+        # Force fp16. Qwen3 defaults to bf16, which leaves non-quantized params
+        # (embeddings/norms/lm_head) in bf16 — and the fp16 grad scaler on a T4
+        # can't unscale bf16 grads ("...not implemented for 'BFloat16'").
+        dtype=torch.float16,
     )
     model = prepare_model_for_kbit_training(model)
     model.config.use_cache = False  # required with gradient checkpointing
