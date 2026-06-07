@@ -96,10 +96,19 @@ Lessons worth a paragraph each in the report:
   Report-grade LLM numbers must use full-candidate filtered ranking (via vLLM).
   *(→ Method / Limitations.)*
 
-- **Dev-time zero-shot floor (256-way sampled, n=1000):** Qwen3-1.7B MRR 0.107 /
-  H@1 0.062 / H@3 0.105 / H@10 0.175 — ~4.5x the 256-way random MRR (0.024) and
-  ~16x random H@1, i.e. the base model extracts real but weak signal from entity
-  names. Floor only; do not put in the SOTA-comparable table.
+- **Dev-time zero-shot floor (256-way sampled, n=1000) — clean scaling trend:**
+
+  | Model      | MRR   | H@1   | H@3   | H@10  |
+  |------------|-------|-------|-------|-------|
+  | Qwen3-0.6B | 0.079 | 0.041 | 0.069 | 0.137 |
+  | Qwen3-1.7B | 0.107 | 0.062 | 0.105 | 0.175 |
+  | Qwen3-4B   | 0.138 | 0.081 | 0.136 | 0.244 |
+
+  Monotonic in model size on every metric (no crossovers) — zero-shot KG completion
+  improves with scale. All far above the 256-way random floor (MRR ~0.024). This
+  scaling trend is headline-worthy, BUT the numbers are sampled (dev only); the
+  report uses full-candidate vLLM eval. Open question for Week 2+: does SFT on a
+  small model beat zero-shot on a much larger one? *(→ Analysis: scaling.)*
 
 - **Dropped Qwen3.5-2B (linear attention).** Its kernels (`causal-conv1d`) won't
   build on Kaggle; the torch fallback ran ~38 s/triple and crashed at scale. Chose

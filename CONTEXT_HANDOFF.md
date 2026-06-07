@@ -36,9 +36,11 @@ session, plus the working agreements that aren't visible from code.
 
 ## Where we are in the plan
 
-We have **completed Phase 1, Week 1, Day 1–5** of the 8-week plan (data + filtered
-eval harness + all four KGE baselines trained) and are starting **Day 6–7: the LLM
-eval harness + zero-shot Qwen2.5-1.5B baseline**.
+We have **completed Phase 1, Week 1 (all of it)**: data + filtered eval harness,
+four KGE baselines (RotatE 0.324 / QuatE 0.304 / TransE 0.289 / ComplEx 0.222), and
+the zero-shot LLM baseline — a Qwen3 size-scaling floor (0.6B/1.7B/4B, 256-way
+sampled dev metric: MRR 0.079 / 0.107 / 0.138, monotonic in scale). Next is
+**Week 2: supervised fine-tuning (SFT)**.
 
 ### Done
 
@@ -231,25 +233,26 @@ purpose — don't drift into something else by accident.
 
 ## Next concrete action when picking up
 
-Week 1 Day 1–5 is done: data loader, filtered-eval harness, frequency baseline,
-and all four KGE baselines trained on Kaggle (filtered MRR, dim 256): **RotatE
-0.324, QuatE 0.304, TransE 0.289, ComplEx 0.222**. Each `artifacts/kge/<name>/`
-has `embeddings.pt` (raw material for Week 3 mining). KGE metrics come from
-PyKEEN's evaluator; our harness is validated by exact agreement on a non-inverse
-model and is incompatible with inverse-triples models (see Lessons).
+**Week 1 is complete.** KGE baselines (RotatE 0.324 / QuatE 0.304 / TransE 0.289 /
+ComplEx 0.222, full filtered MRR, dim 256; `embeddings.pt` saved per model for
+Week 3) and the zero-shot LLM scaling floor (Qwen3 0.6B/1.7B/4B; 256-way *sampled*
+dev metric MRR 0.079/0.107/0.138 — NOT for the report; full-candidate vLLM eval is
+task #13). LLM scoring = per-candidate length-normalized log-prob through the same
+`evaluate()` harness.
 
-Next is **Week 1, Day 6–7: the LLM evaluation harness + zero-shot baseline.**
+Next is **Week 2: supervised fine-tuning (SFT).** Plan (see project plan Week 2):
 
-1. Re-read this file and `kg_llm_project_plan.md` Week 1 Day 6–7.
-2. Theory first (plain language, define every term, intuition before equations):
-   how we score an LLM for KG completion via per-candidate log-prob,
-   log p(tail | prompt), NOT generation; why that's apples-to-apples with KGE
-   ranking; batching over the shared prompt prefix.
-3. Build an LLM `Scorer` (same protocol as the KGE one) that computes the model's
-   log-prob of each candidate entity name and ranks by it, reusing the exact
-   `evaluate()` harness — the "identical ruler" we validated.
-4. Run zero-shot Qwen2.5-1.5B-Instruct through it. Expect terrible numbers — that's
-   the documented zero-shot baseline and the floor SFT/DPO must beat.
+1. Theory first (plain language, define every term): SFT objective; the chat
+   template; **loss masking** (compute loss only on the answer tokens, not the
+   prompt); QLoRA (4-bit base + LoRA adapters) and why it fits a T4.
+2. Format FB15k-237 triples as prompt→answer pairs, BOTH directions (tail and head
+   prediction), using Qwen3's chat template (set enable_thinking=False).
+3. SFT one or more of the Qwen3 sizes with `trl` SFTTrainer + `peft` QLoRA on
+   Kaggle. Save adapters.
+4. Evaluate via the same sampled harness (dev) to confirm it climbs off the
+   zero-shot floor; full-candidate eval comes later (task #13).
 
-Reminder of the working agreement: pause after meaningful units for Tudor's
-review; he runs all git/pip/training on his side; explain the theory as we build.
+Reminders: pair-programming; pause after meaningful units; explain theory from the
+ground up (define every term — Tudor is strong at math but new to this subfield's
+jargon); Tudor runs all git/pip/GPU on his side; KGE numbers from PyKEEN, LLM
+report numbers via full-candidate vLLM (sampled = dev only).
