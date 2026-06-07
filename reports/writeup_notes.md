@@ -83,3 +83,26 @@ Lessons worth a paragraph each in the report:
   dim-hungry (its strong published numbers use dim 1000–2000 + N3); at small dim a
   simple translation model wins. A nice "it depends" hook for the per-relation
   analysis. *(→ Analysis.)*
+
+## LLM side (zero-shot, Day 6–7) — decisions and dev-time floors
+
+- **Scoring = per-candidate log-prob, length-normalized.** Rank entities by
+  mean log p(entity name | prompt); same filtered harness as KGE. *(→ Method.)*
+
+- **Candidate sampling is a dev shortcut, NOT report material.** The fast eval
+  ranks the gold against 256 candidates (gold + 255 sampled negatives). This is an
+  *easier* metric than full-14,541 ranking and is NOT comparable to KGE/SOTA — only
+  *query* subsampling preserves comparability, *candidate* subsampling does not.
+  Report-grade LLM numbers must use full-candidate filtered ranking (via vLLM).
+  *(→ Method / Limitations.)*
+
+- **Dev-time zero-shot floor (256-way sampled, n=1000):** Qwen3-1.7B MRR 0.107 /
+  H@1 0.062 / H@3 0.105 / H@10 0.175 — ~4.5x the 256-way random MRR (0.024) and
+  ~16x random H@1, i.e. the base model extracts real but weak signal from entity
+  names. Floor only; do not put in the SOTA-comparable table.
+
+- **Dropped Qwen3.5-2B (linear attention).** Its kernels (`causal-conv1d`) won't
+  build on Kaggle; the torch fallback ran ~38 s/triple and crashed at scale. Chose
+  a cleaner **model-scaling axis** instead: Qwen3 0.6B / 1.7B / 4B, all standard
+  attention. Better paper story (does scaling close the LLM↔KGE gap?), no kernel
+  pain. *(→ Method / Analysis: scaling.)*

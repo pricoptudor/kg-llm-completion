@@ -18,8 +18,8 @@ becomes downloadable output. `/kaggle/input/` is read-only attached data.
   unless you're deliberately retuning a model — they're kept for reproducibility
   and Phase 2 (Hetionet).
 - **New now: the zero-shot LLM baseline.** Reuse the same notebook setup (§1–§5),
-  then jump to **"LLM zero-shot baseline"** at the bottom and run it for BOTH
-  `Qwen/Qwen3-1.7B` and `Qwen/Qwen3.5-2B`.
+  then jump to **"LLM zero-shot baseline"** at the bottom and run it for the three
+  Qwen3 sizes: `Qwen/Qwen3-0.6B`, `Qwen/Qwen3-1.7B`, `Qwen/Qwen3-4B`.
 
 ---
 
@@ -154,11 +154,13 @@ This is the only new Kaggle work. It reuses the same notebook setup as the KGE r
 with `pip install -e . --no-deps`). Two additions:
 
 ```python
-# Qwen3.5 is very new — make sure transformers is recent enough to load it.
 !pip install -q -U transformers accelerate
 ```
 
-The model weights download from Hugging Face (~3–4 GB each), so internet must be on.
+We evaluate three Qwen3 sizes for a model-scaling axis — `Qwen/Qwen3-0.6B`,
+`Qwen/Qwen3-1.7B`, `Qwen/Qwen3-4B` (all standard attention, so no kernel issues;
+the linear-attention Qwen3.5 was dropped — too slow/fragile on Kaggle). The weights
+download from Hugging Face (~1.5–8 GB each), so internet must be on.
 
 First, validate the scoring math locally (CPU, no GPU needed) — ideally on your own
 machine before even opening Kaggle:
@@ -170,14 +172,14 @@ pytest tests/test_llm_scorer.py -q
 Then in the notebook:
 
 ```python
-# 1) tiny dry run per model — confirms loading + scoring, and times one model
-!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3-1.7B --data-dir /kaggle/input/fb15k237 --num-test 5
-!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3.5-2B --data-dir /kaggle/input/fb15k237 --num-test 5
+# 1) tiny dry run on the smallest model — confirms loading + scoring, times it
+!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3-0.6B --data-dir /kaggle/input/fb15k237 --num-test 5
 
-# 2) the real baselines (use the dry-run timing to confirm 1000 fits the ~9h
-#    session; lower --num-test if not). Same --seed => same test subset for both.
+# 2) the real zero-shot baselines, one per size (same --seed => same test subset).
+#    All standard attention, so all run in minutes at the 256-candidate default.
+!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3-0.6B --data-dir /kaggle/input/fb15k237 --num-test 1000
 !python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3-1.7B --data-dir /kaggle/input/fb15k237 --num-test 1000
-!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3.5-2B --data-dir /kaggle/input/fb15k237 --num-test 1000
+!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3-4B   --data-dir /kaggle/input/fb15k237 --num-test 1000
 ```
 
 - **Sampled ranking.** Scoring all 14,541 entities per query is infeasible on a
@@ -194,26 +196,10 @@ Then in the notebook:
   go into the README table. Expect both **below the 0.23 frequency floor** — that's
   the zero-shot floor SFT/DPO will climb from, not a bug.
 
-### If Qwen3.5-2B crashes (`CUDA error: unspecified launch failure`)
-
-Qwen3.5 is a linear-attention model; without its kernels it runs an unstable
-pure-torch fallback (you'll see "The fast path is not available ... Falling back to
-torch implementation"). Try, in order:
-
-```python
-# 1) install the linear-attention kernels so it uses the stable fast path
-!pip install -q flash-linear-attention causal-conv1d
-
-# 2) if it still crashes, get the REAL error location (turns async into sync)
-import os; os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-# ...then re-run the Qwen3.5 command and paste the new traceback
-
-# 3) or just shrink the batch — sometimes avoids the fallback's bad path
-!python scripts/eval_llm_zeroshot.py --model Qwen/Qwen3.5-2B --data-dir /kaggle/input/fb15k237 --num-test 1000 --cand-batch-size 64
-```
-
-Qwen3-1.7B (standard attention) is the stable anchor; if Qwen3.5 stays flaky,
-report Qwen3-1.7B and note the instability.
+> Note: we originally tried Qwen3.5-2B for novelty but dropped it — it's a
+> linear-attention model whose kernels (`causal-conv1d`) won't build on Kaggle, so
+> it ran ~38 s/triple on the unstable torch fallback. The three standard-attention
+> Qwen3 sizes give a cleaner model-scaling comparison with none of that pain.
 
 ## Quotas & gotchas
 

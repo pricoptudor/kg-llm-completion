@@ -24,13 +24,15 @@ ComplEx, which needs a much larger dim to reach its ~0.32 anchor.
 | ComplEx                         | 0.222 | 0.154 | 0.242 | 0.358 |
 | RotatE                          | **0.324** | **0.229** | **0.361** | **0.518** |
 | QuatE                           | 0.304 | 0.217 | 0.335 | 0.483 |
-| Qwen2.5-1.5B (zero-shot)        | —     | —     | —     | —     |
-| Qwen2.5-1.5B SFT                | —     | —     | —     | —     |
-| Qwen2.5-1.5B SFT + DPO (random) | —     | —     | —     | —     |
-| Qwen2.5-1.5B SFT + DPO (KGE)    | —     | —     | —     | —     |
+| Qwen3-1.7B (zero-shot)          | —     | —     | —     | —     |
+| Qwen3-1.7B SFT                  | —     | —     | —     | —     |
+| Qwen3-1.7B SFT + DPO (random)   | —     | —     | —     | —     |
+| Qwen3-1.7B SFT + DPO (KGE)      | —     | —     | —     | —     |
 
 RotatE is the strongest KGE baseline; every method clears the frequency floor by a
-clear margin. Phase 2 (Hetionet) table forthcoming.
+clear margin. The LLM side spans a **model-scaling axis** (Qwen3 0.6B / 1.7B / 4B)
+across zero-shot → SFT → DPO; final LLM numbers use full-candidate filtered ranking
+(via vLLM) to stay comparable to the KGE table. Phase 2 (Hetionet) forthcoming.
 
 ## Reproduction
 
