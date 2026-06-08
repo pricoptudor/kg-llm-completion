@@ -1,15 +1,14 @@
-"""SFT a Qwen3 model on FB15k-237 with QLoRA (4-bit base + LoRA adapters).
+"""SFT a Qwen3 model on FB15k-237 with QLoRA via Unsloth (fast 4-bit + LoRA).
 
-What this does, mapped to the Week 2 theory:
-- Loads the base model in 4-bit (quantization, the "Q" in QLoRA) — frozen.
-- Adds LoRA adapters (the only trainable params) on the attention projections.
-- Builds both-direction chat examples (predict tail / predict head).
-- Trains with trl's SFTTrainer, which applies Qwen3's chat template and (via
-  `assistant_only_loss`) masks the loss to the assistant's answer tokens only.
+Unsloth replaces the plain transformers/bitsandbytes model loading with custom
+Triton kernels: ~2x faster training, much lower memory, and — crucially for the
+T4 — it manages fp16 precision correctly, so we can re-enable fp16 (which the plain
+path couldn't, due to Qwen3's bf16 config crashing the grad scaler). Everything
+else is unchanged: both-direction chat examples, answer-only loss masking, our YAML
+config. A GPUMonitor callback prints VRAM + utilization so we can see headroom.
 
-Run on a GPU box / Kaggle. Smoke-test first to validate the pipeline cheaply:
+Run on a GPU box / Kaggle (smoke first):
     python scripts/train_sft.py --config configs/sft/qwen3_1.7b.yaml --max-triples 200
-Then the full run:
     python scripts/train_sft.py --config configs/sft/qwen3_1.7b.yaml
 """
 
@@ -17,24 +16,43 @@ from __future__ import annotations
 
 import os
 
-# Use a SINGLE GPU. Kaggle "T4 x2" exposes two GPUs AND pre-sets
-# CUDA_VISIBLE_DEVICES, so HF Trainer would wrap the model in DataParallel and clash
-# with device_map="auto" -> "parameters on cuda:1". QLoRA of a 1.7B model fits on
-# one T4, so we force the visible set down to its first entry (before importing
-# torch). Must be a hard assignment — setdefault won't override Kaggle's value.
+# Use ONE GPU (Kaggle "T4 x2" pre-sets CUDA_VISIBLE_DEVICES; reduce to its first).
 os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"
 
-import argparse
-from pathlib import Path
+from unsloth import FastLanguageModel  # noqa: E402  (must import before transformers/trl)
 
-import torch
-import yaml
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTConfig, SFTTrainer
+import argparse  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-from kg_llm.data.fb15k237 import load_fb15k237
-from kg_llm.llm.sft_data import make_sft_dataset
+import torch  # noqa: E402
+import yaml  # noqa: E402
+from transformers import TrainerCallback  # noqa: E402
+from trl import SFTConfig, SFTTrainer  # noqa: E402
+
+from kg_llm.data.fb15k237 import load_fb15k237  # noqa: E402
+from kg_llm.llm.sft_data import make_sft_dataset  # noqa: E402
+
+
+class GPUMonitor(TrainerCallback):
+    """Print GPU memory (and utilization, if pynvml is available) at each log."""
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if not torch.cuda.is_available():
+            return
+        reserved = torch.cuda.memory_reserved() / 1e9
+        peak = torch.cuda.max_memory_reserved() / 1e9
+        total = torch.cuda.get_device_properties(0).total_memory / 1e9
+        util = ""
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+            util = f"  util={pynvml.nvmlDeviceGetUtilizationRates(h).gpu}%"
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+        print(f"[GPU] VRAM reserved={reserved:.1f}/{total:.0f}GB  peak={peak:.1f}GB{util}")
 
 
 def main() -> None:
@@ -46,57 +64,32 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
-    print(f"CUDA: {torch.cuda.is_available()} "
-          f"({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
 
     ds = load_fb15k237(args.data_dir)
     max_triples = args.max_triples if args.max_triples is not None else cfg.get("max_triples")
     train_ds = make_sft_dataset(ds, "train", max_triples=max_triples)
     print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
 
-    # 4-bit quantization config (NF4 + double quant, fp16 compute — T4 has no bf16).
-    bnb = BitsAndBytesConfig(
+    max_len = cfg["train"].get("max_length", 128)
+    # Unsloth: 4-bit load + auto dtype (fp16 on a T4) + its own fast kernels.
+    model, tok = FastLanguageModel.from_pretrained(
+        model_name=cfg["model"],
+        max_seq_length=max_len,
+        dtype=None,  # auto-detect (fp16 on T4)
         load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
     )
-    tok = AutoTokenizer.from_pretrained(cfg["model"])
-    if tok.pad_token_id is None:
-        tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg["model"],
-        quantization_config=bnb,
-        device_map="auto",
-        # Force fp16. Qwen3 defaults to bf16, which leaves non-quantized params
-        # (embeddings/norms/lm_head) in bf16 — and the fp16 grad scaler on a T4
-        # can't unscale bf16 grads ("...not implemented for 'BFloat16'").
-        dtype=torch.float16,
-        attn_implementation="sdpa",  # PyTorch memory-efficient attention (faster than eager, T4-ok)
-    )
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
-    model.config.use_cache = False
-
-    lora = LoraConfig(
+    model = FastLanguageModel.get_peft_model(
+        model,
         r=cfg["lora"]["r"],
+        target_modules=cfg["lora"].get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
         lora_alpha=cfg["lora"]["alpha"],
-        lora_dropout=cfg["lora"].get("dropout", 0.05),
-        target_modules=cfg["lora"].get(
-            "target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]
-        ),
+        lora_dropout=cfg["lora"].get("dropout", 0.0),
         bias="none",
-        task_type="CAUSAL_LM",
+        # Unsloth's gradient checkpointing is memory-efficient WITHOUT the usual
+        # speed penalty — frees VRAM for a bigger batch.
+        use_gradient_checkpointing="unsloth",
+        random_state=42,
     )
-
-    # Apply LoRA ourselves (instead of via SFTTrainer's peft_config) so we can force
-    # the trainable adapter params to fp32. Qwen3's config dtype is bf16, which peft
-    # otherwise propagates into the adapters — and the fp16 grad scaler on a T4 can't
-    # unscale bf16 grads. Base stays 4-bit/frozen; only these fp32 adapters train.
-    model = get_peft_model(model, lora)
-    for p in model.parameters():
-        if p.requires_grad and p.dtype != torch.float32:
-            p.data = p.data.float()
-    model.print_trainable_parameters()
 
     out = Path(args.output_dir) / cfg["name"]
     sft_cfg = SFTConfig(
@@ -105,19 +98,12 @@ def main() -> None:
         gradient_accumulation_steps=cfg["train"]["grad_accum"],
         learning_rate=float(cfg["train"]["lr"]),
         num_train_epochs=cfg["train"]["epochs"],
-        max_length=cfg["train"].get("max_length", 256),
-        packing=cfg["train"].get("packing", False),
+        max_length=max_len,
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         logging_steps=20,
         save_strategy="epoch",
-        # No fp16 grad scaler. Qwen3's bf16 config leaks bf16 gradients, and the
-        # fp16 scaler's CUDA unscale op isn't implemented for bf16 on a T4 (and the
-        # T4 can't do bf16 training either). The 4-bit base already computes in fp16
-        # via bnb and the adapters are fp32, so we skip autocast/scaling entirely —
-        # stable for LoRA and it sidesteps the unsupported op.
-        fp16=False,
-        gradient_checkpointing=False,  # memory headroom (4-bit base, seq 128) -> ~30% faster
+        fp16=True,  # Unsloth handles T4 fp16 correctly (no bf16 grad-scaler crash)
         assistant_only_loss=True,  # loss on the assistant answer tokens only
         report_to="wandb" if cfg.get("wandb") else "none",
         run_name=cfg["name"],
@@ -125,13 +111,18 @@ def main() -> None:
     )
 
     trainer = SFTTrainer(
-        model=model,  # LoRA already applied above
+        model=model,
         args=sft_cfg,
         train_dataset=train_ds,
         processing_class=tok,
+        callbacks=[GPUMonitor()],
     )
     trainer.train()
-    trainer.save_model(str(out))  # saves the LoRA adapter
+    trainer.save_model(str(out))
+    if torch.cuda.is_available():
+        total = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"Peak VRAM: {torch.cuda.max_memory_reserved()/1e9:.1f} GB of {total:.0f} GB "
+              f"(headroom => room for a bigger batch)")
     print(f"\nSaved LoRA adapter to {out}")
 
 

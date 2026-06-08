@@ -2,23 +2,22 @@
 name: qwen3_1.7b_sft_fb15k237
 model: Qwen/Qwen3-1.7B
 
-# Subsample of train triples (each -> 2 examples). The full 272k triples (=544k
-# examples) is ~50h on a T4 (fp16 is disabled for the bf16 workaround, so no
-# Tensor-Core speedup). 50k triples (=100k examples, 1 epoch) lifts the model off
-# the zero-shot floor in a few hours. Use the SAME value across model sizes for a
-# fair scaling comparison. Set 200 for a smoke run (--max-triples overrides).
+# Subsample of train triples (each -> 2 examples). With Unsloth (~2x) + batch 16 +
+# fp16 re-enabled, 50k triples (=100k examples, 1 epoch) should train in ~2-3h on a
+# T4. Use the SAME value across model sizes for a fair scaling comparison. Check the
+# ETA after it starts and lower this if a session won't cover it. (--max-triples overrides.)
 max_triples: 50000
 
 # LoRA adapter: train only these low-rank matrices, base stays frozen + 4-bit.
 lora:
   r: 16
   alpha: 32
-  dropout: 0.05
+  dropout: 0.0           # 0 enables Unsloth's fast LoRA path
   target_modules: [q_proj, k_proj, v_proj, o_proj]   # attention projections
 
 train:
-  batch_size: 8          # per-device; 4-bit 1.7B at seq 256 fits a T4
-  grad_accum: 4          # effective batch = 8 * 4 = 32
+  batch_size: 16         # bumped 8->16 (Unsloth frees VRAM); watch the GPU monitor for OOM
+  grad_accum: 2          # effective batch = 16 * 2 = 32 (unchanged)
   lr: 2.0e-4             # LoRA tolerates a higher LR than full fine-tuning
   epochs: 1
   max_length: 128        # KG prompt+answer fits well under 128; ~halves compute/step vs 256
