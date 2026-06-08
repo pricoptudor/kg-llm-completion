@@ -35,6 +35,17 @@ def main() -> None:
     ap.add_argument("--chat", action="store_true", help="score via chat template (for SFT/DPO models)")
     args = ap.parse_args()
 
+    if args.adapter:
+        import os
+
+        if not os.path.isdir(args.adapter):
+            raise SystemExit(
+                f"--adapter '{args.adapter}' is not a local directory (it got treated as a "
+                "HF repo id). Pass the ABSOLUTE path to the extracted adapter, e.g. "
+                "/kaggle/working/qwen3_1.7b_sft_fb15k237"
+            )
+        args.adapter = os.path.abspath(args.adapter)
+
     ds = load_fb15k237(args.data_dir)
     filtered_index = ds.build_filtered_index()
 
