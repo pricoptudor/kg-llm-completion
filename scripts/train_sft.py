@@ -105,6 +105,7 @@ def main() -> None:
         learning_rate=float(cfg["train"]["lr"]),
         num_train_epochs=cfg["train"]["epochs"],
         max_length=cfg["train"].get("max_length", 256),
+        packing=cfg["train"].get("packing", False),
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         logging_steps=20,

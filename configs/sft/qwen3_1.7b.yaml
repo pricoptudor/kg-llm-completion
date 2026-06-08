@@ -22,6 +22,7 @@ train:
   lr: 2.0e-4             # LoRA tolerates a higher LR than full fine-tuning
   epochs: 1
   max_length: 128        # KG prompt+answer fits well under 128; ~halves compute/step vs 256
+  packing: true          # concat short examples to fill each sequence -> kills padding waste
 
 wandb:
   project: kg-llm-completion
