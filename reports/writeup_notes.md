@@ -115,3 +115,16 @@ Lessons worth a paragraph each in the report:
   a cleaner **model-scaling axis** instead: Qwen3 0.6B / 1.7B / 4B, all standard
   attention. Better paper story (does scaling close the LLM↔KGE gap?), no kernel
   pain. *(→ Method / Analysis: scaling.)*
+
+- **SFT works — and dramatically (Qwen3-1.7B, 256-way sampled dev metric).**
+  Zero-shot 0.107 → **SFT 0.418** MRR (H@1 0.062→0.329, H@10 0.175→0.595), a ~4x
+  lift. QLoRA SFT (r16 on q/k/v/o, 50k triples / 100k both-direction examples, 1
+  epoch, answer-only loss) on the train split, evaluated on TEST triples so this is
+  generalization, not memorization. Headline Week 2 result. *(→ Results.)*
+
+- **SFT training pipeline lessons (T4):** plain trl/bitsandbytes hit a wall —
+  Qwen3's bf16 config crashes the fp16 grad scaler on a T4 (no bf16 support), and
+  4-bit dequant without fp16 Tensor Cores is slow. **Unsloth** fixed both (correct
+  T4 fp16 + ~2x kernels): full 100k-example epoch in ~72 min. Also: raw `trl`
+  packing cross-contaminates without flash-attn (which Turing lacks); free VRAM ≠
+  free speed (we were compute-bound at batch 32, 3.8/16 GB). *(→ Method / engineering.)*
