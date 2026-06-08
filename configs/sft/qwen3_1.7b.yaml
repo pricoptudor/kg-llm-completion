@@ -16,8 +16,8 @@ lora:
   target_modules: [q_proj, k_proj, v_proj, o_proj]   # attention projections
 
 train:
-  batch_size: 16         # bumped 8->16 (Unsloth frees VRAM); watch the GPU monitor for OOM
-  grad_accum: 2          # effective batch = 16 * 2 = 32 (unchanged)
+  batch_size: 32         # smoke used only 2.4/16GB at batch 16, so 32 is safe (effective batch
+  grad_accum: 1          # stays 32). 0.6B/1.7B can go higher (48-64) — watch the GPU monitor.
   lr: 2.0e-4             # LoRA tolerates a higher LR than full fine-tuning
   epochs: 1
   max_length: 128        # KG prompt+answer fits well under 128; ~halves compute/step vs 256
