@@ -109,7 +109,12 @@ def main() -> None:
         warmup_ratio=0.03,
         logging_steps=20,
         save_strategy="epoch",
-        fp16=True,
+        # No fp16 grad scaler. Qwen3's bf16 config leaks bf16 gradients, and the
+        # fp16 scaler's CUDA unscale op isn't implemented for bf16 on a T4 (and the
+        # T4 can't do bf16 training either). The 4-bit base already computes in fp16
+        # via bnb and the adapters are fp32, so we skip autocast/scaling entirely —
+        # stable for LoRA and it sidesteps the unsupported op.
+        fp16=False,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         assistant_only_loss=True,  # loss on the assistant answer tokens only
