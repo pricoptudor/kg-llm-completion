@@ -118,7 +118,6 @@ def main() -> None:
         # stable for LoRA and it sidesteps the unsupported op.
         fp16=False,
         gradient_checkpointing=False,  # memory headroom (4-bit base, seq 128) -> ~30% faster
-        group_by_length=True,          # batch similar-length examples -> less padding waste
         assistant_only_loss=True,  # loss on the assistant answer tokens only
         report_to="wandb" if cfg.get("wandb") else "none",
         run_name=cfg["name"],
