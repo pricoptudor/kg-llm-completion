@@ -31,6 +31,7 @@ import torch
 from tqdm.auto import tqdm
 
 from kg_llm.data.fb15k237 import FB15k237
+from kg_llm.llm.sft_data import head_question, tail_question
 
 
 def tail_prompt(head_name: str, relation_name: str) -> str:
@@ -52,6 +53,7 @@ class LLMScorer:
         *,
         length_normalize: bool = True,
         cand_batch_size: int = 128,
+        chat_template: bool = False,
         device=None,
     ) -> None:
         self.model = model.eval()
@@ -59,13 +61,20 @@ class LLMScorer:
         self.ds = dataset
         self.length_normalize = length_normalize
         self.cand_batch_size = cand_batch_size
+        # chat_template=True scores candidates as the assistant answer to a chat
+        # prompt (for SFT/DPO models, matching how they were trained). False = the
+        # plain-completion prompt (for the zero-shot base model).
+        self.chat_template = chat_template
         self.device = device or next(model.parameters()).device
 
         if self.tok.pad_token_id is None:
             self.tok.pad_token = self.tok.eos_token
 
+        # In chat mode the answer follows "...assistant\n" with no leading space;
+        # in plain mode it follows "Tail:" so we prepend a space.
+        lead = "" if chat_template else " "
         cand_tokens = [
-            self.tok(" " + dataset.entity_name(i), add_special_tokens=False).input_ids
+            self.tok(lead + dataset.entity_name(i), add_special_tokens=False).input_ids
             for i in range(dataset.num_entities)
         ]
         E = dataset.num_entities
@@ -122,12 +131,30 @@ class LLMScorer:
         return out.cpu()
 
     # candidate-subset scoring (used by evaluate_llm_sampled)
+    def _tail_prefix(self, head_id, relation_id) -> str:
+        hn, rn = self.ds.entity_name(int(head_id)), self.ds.relation_name(int(relation_id))
+        if self.chat_template:
+            return self.tok.apply_chat_template(
+                [{"role": "user", "content": tail_question(hn, rn)}],
+                tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            )
+        return tail_prompt(hn, rn)
+
+    def _head_prefix(self, relation_id, tail_id) -> str:
+        tn, rn = self.ds.entity_name(int(tail_id)), self.ds.relation_name(int(relation_id))
+        if self.chat_template:
+            return self.tok.apply_chat_template(
+                [{"role": "user", "content": head_question(tn, rn)}],
+                tokenize=False, add_generation_prompt=True, enable_thinking=False,
+            )
+        return head_prompt(tn, rn)
+
     def score_tail_candidates(self, head_id, relation_id, candidate_ids) -> torch.Tensor:
-        prefix = tail_prompt(self.ds.entity_name(int(head_id)), self.ds.relation_name(int(relation_id)))
+        prefix = self._tail_prefix(head_id, relation_id)
         return self._score_indices(prefix, torch.as_tensor(candidate_ids, dtype=torch.long))
 
     def score_head_candidates(self, relation_id, tail_id, candidate_ids) -> torch.Tensor:
-        prefix = head_prompt(self.ds.entity_name(int(tail_id)), self.ds.relation_name(int(relation_id)))
+        prefix = self._head_prefix(relation_id, tail_id)
         return self._score_indices(prefix, torch.as_tensor(candidate_ids, dtype=torch.long))
 
     # full Scorer protocol (scores ALL entities — exact but expensive; small sets only)
@@ -136,8 +163,7 @@ class LLMScorer:
         allidx = torch.arange(self.ds.num_entities)
         out = torch.empty(len(heads), self.ds.num_entities)
         for k in range(len(heads)):
-            prefix = tail_prompt(self.ds.entity_name(int(heads[k])), self.ds.relation_name(int(relations[k])))
-            out[k] = self._score_indices(prefix, allidx)
+            out[k] = self._score_indices(self._tail_prefix(heads[k], relations[k]), allidx)
         return out
 
     @torch.no_grad()
@@ -145,8 +171,7 @@ class LLMScorer:
         allidx = torch.arange(self.ds.num_entities)
         out = torch.empty(len(relations), self.ds.num_entities)
         for k in range(len(relations)):
-            prefix = head_prompt(self.ds.entity_name(int(tails[k])), self.ds.relation_name(int(relations[k])))
-            out[k] = self._score_indices(prefix, allidx)
+            out[k] = self._score_indices(self._head_prefix(relations[k], tails[k]), allidx)
         return out
 
 

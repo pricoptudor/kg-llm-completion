@@ -31,6 +31,8 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cand-batch-size", type=int, default=128)
     ap.add_argument("--no-length-norm", action="store_true")
+    ap.add_argument("--adapter", default=None, help="path to a LoRA adapter dir (SFT/DPO eval)")
+    ap.add_argument("--chat", action="store_true", help="score via chat template (for SFT/DPO models)")
     args = ap.parse_args()
 
     ds = load_fb15k237(args.data_dir)
@@ -39,16 +41,23 @@ def main() -> None:
     print(f"Loading {args.model} ...")
     print(f"  CUDA available: {torch.cuda.is_available()} "
           f"({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
-    tok = AutoTokenizer.from_pretrained(args.model)
+    tok = AutoTokenizer.from_pretrained(args.adapter or args.model)
     model = AutoModelForCausalLM.from_pretrained(
         args.model, torch_dtype=torch.float16, device_map="auto"
     )
+    if args.adapter:
+        from peft import PeftModel
+
+        print(f"  applying LoRA adapter: {args.adapter}")
+        model = PeftModel.from_pretrained(model, args.adapter)
+        model = model.merge_and_unload()  # fold adapter into the base for fast inference
     print(f"  model device: {next(model.parameters()).device}")
 
     scorer = LLMScorer(
         model, tok, ds,
         length_normalize=not args.no_length_norm,
         cand_batch_size=args.cand_batch_size,
+        chat_template=args.chat,
     )
 
     n = min(args.num_test, ds.test_triples.shape[0])
@@ -63,12 +72,13 @@ def main() -> None:
         num_candidates=args.num_candidates, seed=args.seed,
     )
 
-    print(f"\nZero-shot {args.model} — FB15k-237 (n={n} triples, "
+    tag = f"{args.model} + adapter" if args.adapter else f"{args.model} (zero-shot)"
+    print(f"\n{tag} — FB15k-237 (n={n} triples, "
           f"{args.num_candidates}-way sampled, filtered):")
     print(f"  {metrics}")
-    print("\nLow is expected — the zero-shot floor. NOTE: sampled metric, not "
-          "directly comparable to KGE's full-14,541 MRR (run KGE under the same "
-          "sampling for a fair head-to-head).")
+    print("\nNOTE: sampled metric (over num_candidates), NOT directly comparable to "
+          "KGE's full-14,541 MRR. For the SFT lift, compare to the zero-shot run at "
+          "the SAME --num-candidates/--seed (Qwen3-1.7B zero-shot was MRR 0.107).")
 
 
 if __name__ == "__main__":
