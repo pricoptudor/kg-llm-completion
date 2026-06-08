@@ -2,10 +2,12 @@
 
 Unsloth replaces the plain transformers/bitsandbytes model loading with custom
 Triton kernels: ~2x faster training, much lower memory, and — crucially for the
-T4 — it manages fp16 precision correctly, so we can re-enable fp16 (which the plain
-path couldn't, due to Qwen3's bf16 config crashing the grad scaler). Everything
-else is unchanged: both-direction chat examples, answer-only loss masking, our YAML
-config. A GPUMonitor callback prints VRAM + utilization so we can see headroom.
+T4 — it manages fp16 precision correctly, so we re-enable fp16 (which the plain
+path couldn't, due to Qwen3's bf16 config crashing the grad scaler).
+
+Unsloth's SFTTrainer does NOT auto-apply the chat template to a messages dataset,
+so we render each conversation to a `text` field ourselves, and mask the loss to
+the assistant answer with Unsloth's `train_on_responses_only`.
 
 Run on a GPU box / Kaggle (smoke first):
     python scripts/train_sft.py --config configs/sft/qwen3_1.7b.yaml --max-triples 200
@@ -20,6 +22,7 @@ import os
 os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"
 
 from unsloth import FastLanguageModel  # noqa: E402  (must import before transformers/trl)
+from unsloth.chat_templates import train_on_responses_only  # noqa: E402
 
 import argparse  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -64,13 +67,10 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
-
     ds = load_fb15k237(args.data_dir)
     max_triples = args.max_triples if args.max_triples is not None else cfg.get("max_triples")
-    train_ds = make_sft_dataset(ds, "train", max_triples=max_triples)
-    print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
-
     max_len = cfg["train"].get("max_length", 128)
+
     # Unsloth: 4-bit load + auto dtype (fp16 on a T4) + its own fast kernels.
     model, tok = FastLanguageModel.from_pretrained(
         model_name=cfg["model"],
@@ -85,15 +85,29 @@ def main() -> None:
         lora_alpha=cfg["lora"]["alpha"],
         lora_dropout=cfg["lora"].get("dropout", 0.0),
         bias="none",
-        # Unsloth's gradient checkpointing is memory-efficient WITHOUT the usual
-        # speed penalty — frees VRAM for a bigger batch.
-        use_gradient_checkpointing="unsloth",
+        use_gradient_checkpointing="unsloth",  # memory-efficient, no speed penalty
         random_state=42,
     )
+
+    # Build messages, then render each conversation to a `text` field with Qwen3's
+    # chat template (non-thinking: we want a direct answer, not a reasoning trace).
+    train_ds = make_sft_dataset(ds, "train", max_triples=max_triples)
+
+    def _render(batch):
+        return {
+            "text": [
+                tok.apply_chat_template(m, tokenize=False, enable_thinking=False)
+                for m in batch["messages"]
+            ]
+        }
+
+    train_ds = train_ds.map(_render, batched=True, remove_columns=["messages"])
+    print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
 
     out = Path(args.output_dir) / cfg["name"]
     sft_cfg = SFTConfig(
         output_dir=str(out),
+        dataset_text_field="text",
         per_device_train_batch_size=cfg["train"]["batch_size"],
         gradient_accumulation_steps=cfg["train"]["grad_accum"],
         learning_rate=float(cfg["train"]["lr"]),
@@ -104,7 +118,6 @@ def main() -> None:
         logging_steps=20,
         save_strategy="epoch",
         fp16=True,  # Unsloth handles T4 fp16 correctly (no bf16 grad-scaler crash)
-        assistant_only_loss=True,  # loss on the assistant answer tokens only
         report_to="wandb" if cfg.get("wandb") else "none",
         run_name=cfg["name"],
         seed=42,
@@ -117,6 +130,13 @@ def main() -> None:
         processing_class=tok,
         callbacks=[GPUMonitor()],
     )
+    # Mask the loss to the assistant answer only (Qwen3 chat markers).
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part="<|im_start|>user\n",
+        response_part="<|im_start|>assistant\n",
+    )
+
     trainer.train()
     trainer.save_model(str(out))
     if torch.cuda.is_available():
