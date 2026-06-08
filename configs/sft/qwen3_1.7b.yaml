@@ -2,9 +2,12 @@
 name: qwen3_1.7b_sft_fb15k237
 model: Qwen/Qwen3-1.7B
 
-# null = full train split (~272k triples -> ~544k examples). Set small (e.g. 200)
-# for a smoke run that validates the whole pipeline in a couple of minutes.
-max_triples: null
+# Subsample of train triples (each -> 2 examples). The full 272k triples (=544k
+# examples) is ~50h on a T4 (fp16 is disabled for the bf16 workaround, so no
+# Tensor-Core speedup). 50k triples (=100k examples, 1 epoch) lifts the model off
+# the zero-shot floor in a few hours. Use the SAME value across model sizes for a
+# fair scaling comparison. Set 200 for a smoke run (--max-triples overrides).
+max_triples: 50000
 
 # LoRA adapter: train only these low-rank matrices, base stays frozen + 4-bit.
 lora:
@@ -18,7 +21,7 @@ train:
   grad_accum: 4          # effective batch = 8 * 4 = 32
   lr: 2.0e-4             # LoRA tolerates a higher LR than full fine-tuning
   epochs: 1
-  max_length: 256        # KG prompts are short; 256 is plenty
+  max_length: 128        # KG prompt+answer fits well under 128; ~halves compute/step vs 256
 
 wandb:
   project: kg-llm-completion
