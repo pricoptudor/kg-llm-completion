@@ -29,7 +29,7 @@ from pathlib import Path
 
 import torch
 import yaml
-from peft import LoraConfig, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 
@@ -87,6 +87,16 @@ def main() -> None:
         task_type="CAUSAL_LM",
     )
 
+    # Apply LoRA ourselves (instead of via SFTTrainer's peft_config) so we can force
+    # the trainable adapter params to fp32. Qwen3's config dtype is bf16, which peft
+    # otherwise propagates into the adapters — and the fp16 grad scaler on a T4 can't
+    # unscale bf16 grads. Base stays 4-bit/frozen; only these fp32 adapters train.
+    model = get_peft_model(model, lora)
+    for p in model.parameters():
+        if p.requires_grad and p.dtype != torch.float32:
+            p.data = p.data.float()
+    model.print_trainable_parameters()
+
     out = Path(args.output_dir) / cfg["name"]
     sft_cfg = SFTConfig(
         output_dir=str(out),
@@ -109,10 +119,9 @@ def main() -> None:
     )
 
     trainer = SFTTrainer(
-        model=model,
+        model=model,  # LoRA already applied above
         args=sft_cfg,
         train_dataset=train_ds,
-        peft_config=lora,
         processing_class=tok,
     )
     trainer.train()
