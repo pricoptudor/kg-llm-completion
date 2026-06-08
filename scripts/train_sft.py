@@ -72,9 +72,10 @@ def main() -> None:
         # (embeddings/norms/lm_head) in bf16 — and the fp16 grad scaler on a T4
         # can't unscale bf16 grads ("...not implemented for 'BFloat16'").
         dtype=torch.float16,
+        attn_implementation="sdpa",  # PyTorch memory-efficient attention (faster than eager, T4-ok)
     )
-    model = prepare_model_for_kbit_training(model)
-    model.config.use_cache = False  # required with gradient checkpointing
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)
+    model.config.use_cache = False
 
     lora = LoraConfig(
         r=cfg["lora"]["r"],
@@ -116,8 +117,8 @@ def main() -> None:
         # via bnb and the adapters are fp32, so we skip autocast/scaling entirely —
         # stable for LoRA and it sidesteps the unsupported op.
         fp16=False,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing=False,  # memory headroom (4-bit base, seq 128) -> ~30% faster
+        group_by_length=True,          # batch similar-length examples -> less padding waste
         assistant_only_loss=True,  # loss on the assistant answer tokens only
         report_to="wandb" if cfg.get("wandb") else "none",
         run_name=cfg["name"],
