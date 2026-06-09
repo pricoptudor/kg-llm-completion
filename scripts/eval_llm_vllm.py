@@ -14,14 +14,20 @@ from __future__ import annotations
 import argparse
 import os
 
-import torch
-from transformers import AutoTokenizer
-from vllm import LLM
-from vllm.lora.request import LoRARequest
+# Force a JIT-free attention backend BEFORE importing vllm. On a T4 (compute 7.5)
+# vLLM can't use FlashAttention-2 and falls back to FlashInfer, which ninja-compiles
+# a CUDA kernel that fails to build on Kaggle. TRITON_ATTN is Triton-compiled (no
+# ninja/nvcc) and works on Turing.
+os.environ.setdefault("VLLM_ATTENTION_BACKEND", "TRITON_ATTN")
 
-from kg_llm.data.fb15k237 import load_fb15k237
-from kg_llm.llm.scorer import evaluate_llm_sampled
-from kg_llm.llm.vllm_scorer import VLLMScorer
+import torch  # noqa: E402
+from transformers import AutoTokenizer  # noqa: E402
+from vllm import LLM  # noqa: E402
+from vllm.lora.request import LoRARequest  # noqa: E402
+
+from kg_llm.data.fb15k237 import load_fb15k237  # noqa: E402
+from kg_llm.llm.scorer import evaluate_llm_sampled  # noqa: E402
+from kg_llm.llm.vllm_scorer import VLLMScorer  # noqa: E402
 
 
 def main() -> None:
@@ -50,6 +56,7 @@ def main() -> None:
         dtype="float16",
         max_model_len=args.max_model_len,
         gpu_memory_utilization=0.9,
+        enforce_eager=True,  # skip cudagraph capture/compile — robust on Turing T4
     )
     lora_request = None
     if args.adapter:
@@ -58,9 +65,7 @@ def main() -> None:
     if args.adapter:
         lora_request = LoRARequest("adapter", 1, args.adapter)
 
-    scorer = VLLMScorer(
-        llm, tok, ds, chat_template=args.chat, lora_request=lora_request
-    )
+    scorer = VLLMScorer(llm, tok, ds, chat_template=args.chat, lora_request=lora_request)
 
     n = min(args.num_test, ds.test_triples.shape[0])
     gen = torch.Generator().manual_seed(args.seed)
