@@ -1,13 +1,11 @@
 """SFT a Qwen3 model on FB15k-237 with QLoRA (4-bit base + LoRA), bf16.
 
 Target: a capable GPU (compute >= 8.0, bf16) such as Kaggle's RTX Pro 6000, run
-OFFLINE. Standard transformers + peft + bitsandbytes + trl stack — NOT Unsloth
-(that was a T4 speed/fp16 workaround; preserved at scripts/train_sft_unsloth_t4.py;
-rationale in docs/hardware_notes.md).
-
-Answer-only loss masking: we render chat -> text and use trl's
-DataCollatorForCompletionOnlyLM (masks everything before the assistant marker).
-This avoids needing `{% generation %}` tags in the tokenizer's chat template.
+OFFLINE. Plain transformers + peft + bitsandbytes (NO trl, NO Unsloth). Answer-only
+masking is done manually (tokenize the chat, set prompt-token labels to -100), so it
+doesn't depend on any trl masking feature or `{% generation %}` template tags. The
+Unsloth/T4 variant is preserved at scripts/train_sft_unsloth_t4.py
+(rationale in docs/hardware_notes.md).
 
 Offline: set HF_HUB_OFFLINE=1 and pass --model <local path>. bf16 auto-detected.
 """
@@ -19,19 +17,19 @@ from pathlib import Path
 
 import torch
 import yaml
-from peft import LoraConfig, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DataCollatorForSeq2Seq,
+    Trainer,
     TrainerCallback,
+    TrainingArguments,
 )
-from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 from kg_llm.data.fb15k237 import load_fb15k237
 from kg_llm.llm.sft_data import make_sft_dataset
-
-RESPONSE_TEMPLATE = "<|im_start|>assistant\n"  # Qwen3 chat marker; loss starts after this
 
 
 class GPUMonitor(TrainerCallback):
@@ -76,42 +74,49 @@ def main() -> None:
     gc = bool(cfg["train"].get("gradient_checkpointing", False))
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gc)
     model.config.use_cache = False
-
-    lora = LoraConfig(
-        r=cfg["lora"]["r"],
-        lora_alpha=cfg["lora"]["alpha"],
-        lora_dropout=cfg["lora"].get("dropout", 0.05),
-        target_modules=cfg["lora"].get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
-        bias="none",
-        task_type="CAUSAL_LM",
+    model = get_peft_model(
+        model,
+        LoraConfig(
+            r=cfg["lora"]["r"],
+            lora_alpha=cfg["lora"]["alpha"],
+            lora_dropout=cfg["lora"].get("dropout", 0.05),
+            target_modules=cfg["lora"].get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+            bias="none",
+            task_type="CAUSAL_LM",
+        ),
     )
+    model.print_trainable_parameters()
 
-    # Build messages, render each to a `text` field with the chat template.
+    # Build both-direction chat examples, then tokenize with answer-only masking:
+    # labels = -100 for the prompt tokens (everything up to "...assistant\n"),
+    # real ids for the answer tokens.
     max_triples = args.max_triples if args.max_triples is not None else cfg.get("max_triples")
     raw = make_sft_dataset(ds, "train", max_triples=max_triples)
+    maxlen = cfg["train"].get("max_length", 128)
 
-    def _render(batch):
-        return {
-            "text": [
-                tok.apply_chat_template(m, tokenize=False, enable_thinking=False)
-                for m in batch["messages"]
-            ]
-        }
+    def tok_mask(ex):
+        msgs = ex["messages"]
+        full = tok.apply_chat_template(msgs, tokenize=False, enable_thinking=False)
+        prompt = tok.apply_chat_template(
+            [msgs[0]], tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+        ids = tok(full, add_special_tokens=False, truncation=True, max_length=maxlen)["input_ids"]
+        plen = min(len(tok(prompt, add_special_tokens=False)["input_ids"]), len(ids))
+        labels = [-100] * plen + ids[plen:]
+        return {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labels}
 
-    train_ds = raw.map(_render, batched=True, remove_columns=["messages"])
+    train_ds = raw.map(tok_mask, remove_columns=raw.column_names)
     print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
 
-    collator = DataCollatorForCompletionOnlyLM(response_template=RESPONSE_TEMPLATE, tokenizer=tok)
+    collator = DataCollatorForSeq2Seq(tok, padding=True, label_pad_token_id=-100)
 
     out = Path(args.output_dir) / cfg["name"]
-    sft_cfg = SFTConfig(
+    targs = TrainingArguments(
         output_dir=str(out),
-        dataset_text_field="text",
         per_device_train_batch_size=cfg["train"]["batch_size"],
         gradient_accumulation_steps=cfg["train"]["grad_accum"],
         learning_rate=float(cfg["train"]["lr"]),
         num_train_epochs=cfg["train"]["epochs"],
-        max_length=cfg["train"].get("max_length", 128),
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         logging_steps=20,
@@ -125,13 +130,12 @@ def main() -> None:
         seed=42,
     )
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
-        args=sft_cfg,
+        args=targs,
         train_dataset=train_ds,
-        peft_config=lora,
-        processing_class=tok,
         data_collator=collator,
+        processing_class=tok,
         callbacks=[GPUMonitor()],
     )
     trainer.train()
