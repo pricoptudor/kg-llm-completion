@@ -1,15 +1,15 @@
 """vLLM-backed scorer for KG completion — fast log-prob candidate scoring.
 
 vLLM batches all (prefix + candidate) prompts with continuous batching + shared-
-prefix caching, so it scores candidates far faster than the per-query HF forward
-loop. Same `score_*_candidates` interface as LLMScorer, so `evaluate_llm_sampled`
-works unchanged, and it extends to full-candidate (report-grade) eval.
+prefix caching, so it scores candidates far faster than the per-query HF loop.
 
-Scoring uses vLLM's prompt_logprobs: we send prefix+candidate as a prompt and read
-the log-probabilities vLLM assigns to the candidate's own tokens, then sum / mean.
+- score_*_candidates(...) -> scores for a subset of entities (sampled eval).
+- score_tails/score_heads(...) -> (batch, num_entities) over ALL entities, so this
+  plugs into the FULL filtered harness `kg_llm.eval.ranking.evaluate` for the
+  report-grade, SOTA-comparable numbers (rank gold among all 14,541).
 
-VALIDATION: on the Qwen3-1.7B SFT model (256-way sampled, n=1000) this should match
-the HF LLMScorer result (MRR 0.418). That agreement cross-checks the vLLM path.
+Scoring reads vLLM's prompt_logprobs: send prefix+candidate as a prompt and sum the
+log-probs vLLM assigns to the candidate's own tokens (length-normalized).
 """
 
 from __future__ import annotations
@@ -75,15 +75,13 @@ class VLLMScorer:
             ans_lens.append(len(ans))
 
         sp = SamplingParams(temperature=0.0, max_tokens=1, prompt_logprobs=0)
-        outs = self.llm.generate(
-            prompts, sp, lora_request=self.lora_request, use_tqdm=False
-        )
+        outs = self.llm.generate(prompts, sp, lora_request=self.lora_request, use_tqdm=False)
 
-        scores = torch.full((len(cand_ids),), float("-inf"))
+        scores = torch.full((len(prompts),), float("-inf"))
         for j, (out, a) in enumerate(zip(outs, ans_lens)):
             if a == 0:
                 continue
-            pl = out.prompt_logprobs  # list[Optional[dict[int, Logprob]]], len = #prompt tokens
+            pl = out.prompt_logprobs  # list[Optional[dict[int, Logprob]]]
             ids = prompts[j]["prompt_token_ids"]
             s = 0.0
             for pos in range(plen, plen + a):
@@ -91,8 +89,26 @@ class VLLMScorer:
             scores[j] = s / a if self.length_normalize else s
         return scores
 
+    # subset scoring (sampled eval)
     def score_tail_candidates(self, head_id, relation_id, candidate_ids) -> torch.Tensor:
         return self._score(self._tail_prefix(head_id, relation_id), list(candidate_ids))
 
     def score_head_candidates(self, relation_id, tail_id, candidate_ids) -> torch.Tensor:
         return self._score(self._head_prefix(relation_id, tail_id), list(candidate_ids))
+
+    # full-entity scoring (report-grade, plugs into kg_llm.eval.ranking.evaluate)
+    @torch.no_grad()
+    def score_tails(self, heads: torch.Tensor, relations: torch.Tensor) -> torch.Tensor:
+        allids = list(range(self.ds.num_entities))
+        out = torch.empty(len(heads), self.ds.num_entities)
+        for k in range(len(heads)):
+            out[k] = self._score(self._tail_prefix(heads[k], relations[k]), allids)
+        return out
+
+    @torch.no_grad()
+    def score_heads(self, relations: torch.Tensor, tails: torch.Tensor) -> torch.Tensor:
+        allids = list(range(self.ds.num_entities))
+        out = torch.empty(len(relations), self.ds.num_entities)
+        for k in range(len(relations)):
+            out[k] = self._score(self._head_prefix(relations[k], tails[k]), allids)
+        return out
