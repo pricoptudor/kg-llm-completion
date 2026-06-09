@@ -1,7 +1,7 @@
-# SFT (QLoRA) for Qwen3-1.7b on FB15k-237 — capable GPU (bf16), offline.
+# SFT (QLoRA) for Qwen3-0.6b on FB15k-237 — capable GPU (bf16), offline.
 # Override the base with --model <local Kaggle-Model path> for the offline GPU run.
-name: qwen3_1.7b_sft_fb15k237
-model: Qwen/Qwen3-1.7B
+name: qwen3_0.6b_sft_fb15k237
+model: Qwen/Qwen3-0.6B
 
 # Full train split (272k triples -> 544k both-direction examples). The RTX Pro 6000
 # trains a full bf16 epoch fast. Use --max-triples 200 for a smoke run.
@@ -23,4 +23,4 @@ train:
 
 wandb:
   project: kg-llm-completion
-  tags: [phase1, sft, qwen3-1.7b, fb15k237]
+  tags: [phase1, sft, qwen3-0.6b, fb15k237]

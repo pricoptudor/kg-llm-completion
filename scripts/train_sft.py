@@ -1,61 +1,43 @@
-"""SFT a Qwen3 model on FB15k-237 with QLoRA via Unsloth (fast 4-bit + LoRA).
+"""SFT a Qwen3 model on FB15k-237 with QLoRA (4-bit base + LoRA), bf16.
 
-Unsloth replaces the plain transformers/bitsandbytes model loading with custom
-Triton kernels: ~2x faster training, much lower memory, and — crucially for the
-T4 — it manages fp16 precision correctly, so we re-enable fp16 (which the plain
-path couldn't, due to Qwen3's bf16 config crashing the grad scaler).
+Target: a capable GPU (compute >= 8.0, bf16) such as Kaggle's RTX Pro 6000, run
+OFFLINE. Standard transformers + peft + bitsandbytes + trl stack — NOT Unsloth
+(that was a T4 speed/fp16 workaround; the Unsloth version is preserved at
+scripts/train_sft_unsloth_t4.py and the rationale is in docs/hardware_notes.md).
 
-Unsloth's SFTTrainer does NOT auto-apply the chat template to a messages dataset,
-so we render each conversation to a `text` field ourselves, and mask the loss to
-the assistant answer with Unsloth's `train_on_responses_only`.
-
-Run on a GPU box / Kaggle (smoke first):
-    python scripts/train_sft.py --config configs/sft/qwen3_1.7b.yaml --max-triples 200
-    python scripts/train_sft.py --config configs/sft/qwen3_1.7b.yaml
+Offline: set HF_HUB_OFFLINE=1 and pass --model <local path> (e.g. an attached
+Kaggle Model dir). bf16 is auto-detected, so there's no fp16/grad-scaler hack.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+from pathlib import Path
 
-# Use ONE GPU (Kaggle "T4 x2" pre-sets CUDA_VISIBLE_DEVICES; reduce to its first).
-os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"
+import torch
+import yaml
+from peft import LoraConfig, prepare_model_for_kbit_training
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainerCallback,
+)
+from trl import SFTConfig, SFTTrainer
 
-from unsloth import FastLanguageModel  # noqa: E402  (must import before transformers/trl)
-from unsloth.chat_templates import train_on_responses_only  # noqa: E402
-
-import argparse  # noqa: E402
-from pathlib import Path  # noqa: E402
-
-import torch  # noqa: E402
-import yaml  # noqa: E402
-from transformers import TrainerCallback  # noqa: E402
-from trl import SFTConfig, SFTTrainer  # noqa: E402
-
-from kg_llm.data.fb15k237 import load_fb15k237  # noqa: E402
-from kg_llm.llm.sft_data import make_sft_dataset  # noqa: E402
+from kg_llm.data.fb15k237 import load_fb15k237
+from kg_llm.llm.sft_data import make_sft_dataset
 
 
 class GPUMonitor(TrainerCallback):
-    """Print GPU memory (and utilization, if pynvml is available) at each log."""
-
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not torch.cuda.is_available():
             return
-        reserved = torch.cuda.memory_reserved() / 1e9
+        res = torch.cuda.memory_reserved() / 1e9
         peak = torch.cuda.max_memory_reserved() / 1e9
         total = torch.cuda.get_device_properties(0).total_memory / 1e9
-        util = ""
-        try:
-            import pynvml
-
-            pynvml.nvmlInit()
-            h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            util = f"  util={pynvml.nvmlDeviceGetUtilizationRates(h).gpu}%"
-            pynvml.nvmlShutdown()
-        except Exception:
-            pass
-        print(f"[GPU] VRAM reserved={reserved:.1f}/{total:.0f}GB  peak={peak:.1f}GB{util}")
+        print(f"[GPU] VRAM reserved={res:.1f}/{total:.0f}GB  peak={peak:.1f}GB")
 
 
 def main() -> None:
@@ -63,61 +45,63 @@ def main() -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--data-dir", default="data_cache/fb15k237")
     ap.add_argument("--output-dir", default="artifacts/sft")
-    ap.add_argument("--max-triples", type=int, default=None, help="override config (smoke runs)")
+    ap.add_argument("--model", default=None, help="override base model path (local dir for offline)")
+    ap.add_argument("--max-triples", type=int, default=None)
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
+    model_name = args.model or cfg["model"]
+    bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    compute_dtype = torch.bfloat16 if bf16 else torch.float16
+    print(f"CUDA={torch.cuda.is_available()}  bf16={bf16}  base={model_name}")
+
     ds = load_fb15k237(args.data_dir)
     max_triples = args.max_triples if args.max_triples is not None else cfg.get("max_triples")
-    max_len = cfg["train"].get("max_length", 128)
-
-    # Unsloth: 4-bit load + auto dtype (fp16 on a T4) + its own fast kernels.
-    model, tok = FastLanguageModel.from_pretrained(
-        model_name=cfg["model"],
-        max_seq_length=max_len,
-        dtype=None,  # auto-detect (fp16 on T4)
-        load_in_4bit=True,
-    )
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=cfg["lora"]["r"],
-        target_modules=cfg["lora"].get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
-        lora_alpha=cfg["lora"]["alpha"],
-        lora_dropout=cfg["lora"].get("dropout", 0.0),
-        bias="none",
-        use_gradient_checkpointing="unsloth",  # memory-efficient, no speed penalty
-        random_state=42,
-    )
-
-    # Build messages, then render each conversation to a `text` field with Qwen3's
-    # chat template (non-thinking: we want a direct answer, not a reasoning trace).
     train_ds = make_sft_dataset(ds, "train", max_triples=max_triples)
-
-    def _render(batch):
-        return {
-            "text": [
-                tok.apply_chat_template(m, tokenize=False, enable_thinking=False)
-                for m in batch["messages"]
-            ]
-        }
-
-    train_ds = train_ds.map(_render, batched=True, remove_columns=["messages"])
     print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
+
+    bnb = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=compute_dtype,
+        bnb_4bit_use_double_quant=True,
+    )
+    tok = AutoTokenizer.from_pretrained(model_name)
+    if tok.pad_token_id is None:
+        tok.pad_token = tok.eos_token
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, quantization_config=bnb, device_map="auto", dtype=compute_dtype
+    )
+    gc = bool(cfg["train"].get("gradient_checkpointing", False))
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=gc)
+    model.config.use_cache = False
+
+    lora = LoraConfig(
+        r=cfg["lora"]["r"],
+        lora_alpha=cfg["lora"]["alpha"],
+        lora_dropout=cfg["lora"].get("dropout", 0.05),
+        target_modules=cfg["lora"].get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
 
     out = Path(args.output_dir) / cfg["name"]
     sft_cfg = SFTConfig(
         output_dir=str(out),
-        dataset_text_field="text",
         per_device_train_batch_size=cfg["train"]["batch_size"],
         gradient_accumulation_steps=cfg["train"]["grad_accum"],
         learning_rate=float(cfg["train"]["lr"]),
         num_train_epochs=cfg["train"]["epochs"],
-        max_length=max_len,
+        max_length=cfg["train"].get("max_length", 128),
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         logging_steps=20,
         save_strategy="epoch",
-        fp16=True,  # Unsloth handles T4 fp16 correctly (no bf16 grad-scaler crash)
+        bf16=bf16,
+        fp16=not bf16,
+        gradient_checkpointing=gc,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        assistant_only_loss=True,  # loss on the assistant answer tokens only
         report_to="wandb" if cfg.get("wandb") else "none",
         run_name=cfg["name"],
         seed=42,
@@ -127,22 +111,15 @@ def main() -> None:
         model=model,
         args=sft_cfg,
         train_dataset=train_ds,
+        peft_config=lora,
         processing_class=tok,
         callbacks=[GPUMonitor()],
     )
-    # Mask the loss to the assistant answer only (Qwen3 chat markers).
-    trainer = train_on_responses_only(
-        trainer,
-        instruction_part="<|im_start|>user\n",
-        response_part="<|im_start|>assistant\n",
-    )
-
     trainer.train()
     trainer.save_model(str(out))
     if torch.cuda.is_available():
         total = torch.cuda.get_device_properties(0).total_memory / 1e9
-        print(f"Peak VRAM: {torch.cuda.max_memory_reserved()/1e9:.1f} GB of {total:.0f} GB "
-              f"(headroom => room for a bigger batch)")
+        print(f"Peak VRAM: {torch.cuda.max_memory_reserved()/1e9:.1f} GB of {total:.0f} GB")
     print(f"\nSaved LoRA adapter to {out}")
 
 
