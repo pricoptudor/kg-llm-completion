@@ -2,17 +2,19 @@
 
 Target: a capable GPU (compute >= 8.0, bf16) such as Kaggle's RTX Pro 6000, run
 OFFLINE. Standard transformers + peft + bitsandbytes + trl stack — NOT Unsloth
-(that was a T4 speed/fp16 workaround; the Unsloth version is preserved at
-scripts/train_sft_unsloth_t4.py and the rationale is in docs/hardware_notes.md).
+(that was a T4 speed/fp16 workaround; preserved at scripts/train_sft_unsloth_t4.py;
+rationale in docs/hardware_notes.md).
 
-Offline: set HF_HUB_OFFLINE=1 and pass --model <local path> (e.g. an attached
-Kaggle Model dir). bf16 is auto-detected, so there's no fp16/grad-scaler hack.
+Answer-only loss masking: we render chat -> text and use trl's
+DataCollatorForCompletionOnlyLM (masks everything before the assistant marker).
+This avoids needing `{% generation %}` tags in the tokenizer's chat template.
+
+Offline: set HF_HUB_OFFLINE=1 and pass --model <local path>. bf16 auto-detected.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 import torch
@@ -24,10 +26,12 @@ from transformers import (
     BitsAndBytesConfig,
     TrainerCallback,
 )
-from trl import SFTConfig, SFTTrainer
+from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 from kg_llm.data.fb15k237 import load_fb15k237
 from kg_llm.llm.sft_data import make_sft_dataset
+
+RESPONSE_TEMPLATE = "<|im_start|>assistant\n"  # Qwen3 chat marker; loss starts after this
 
 
 class GPUMonitor(TrainerCallback):
@@ -56,9 +60,6 @@ def main() -> None:
     print(f"CUDA={torch.cuda.is_available()}  bf16={bf16}  base={model_name}")
 
     ds = load_fb15k237(args.data_dir)
-    max_triples = args.max_triples if args.max_triples is not None else cfg.get("max_triples")
-    train_ds = make_sft_dataset(ds, "train", max_triples=max_triples)
-    print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
 
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -85,9 +86,27 @@ def main() -> None:
         task_type="CAUSAL_LM",
     )
 
+    # Build messages, render each to a `text` field with the chat template.
+    max_triples = args.max_triples if args.max_triples is not None else cfg.get("max_triples")
+    raw = make_sft_dataset(ds, "train", max_triples=max_triples)
+
+    def _render(batch):
+        return {
+            "text": [
+                tok.apply_chat_template(m, tokenize=False, enable_thinking=False)
+                for m in batch["messages"]
+            ]
+        }
+
+    train_ds = raw.map(_render, batched=True, remove_columns=["messages"])
+    print(f"SFT examples: {len(train_ds)} (from {max_triples or 'all'} triples, both directions)")
+
+    collator = DataCollatorForCompletionOnlyLM(response_template=RESPONSE_TEMPLATE, tokenizer=tok)
+
     out = Path(args.output_dir) / cfg["name"]
     sft_cfg = SFTConfig(
         output_dir=str(out),
+        dataset_text_field="text",
         per_device_train_batch_size=cfg["train"]["batch_size"],
         gradient_accumulation_steps=cfg["train"]["grad_accum"],
         learning_rate=float(cfg["train"]["lr"]),
@@ -101,7 +120,6 @@ def main() -> None:
         fp16=not bf16,
         gradient_checkpointing=gc,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        assistant_only_loss=True,  # loss on the assistant answer tokens only
         report_to="wandb" if cfg.get("wandb") else "none",
         run_name=cfg["name"],
         seed=42,
@@ -113,6 +131,7 @@ def main() -> None:
         train_dataset=train_ds,
         peft_config=lora,
         processing_class=tok,
+        data_collator=collator,
         callbacks=[GPUMonitor()],
     )
     trainer.train()
