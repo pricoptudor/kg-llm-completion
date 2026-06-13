@@ -1,39 +1,39 @@
-# TransE on FB15k-237 — starting config (tune from here).
-# TransE is the distance model: it wants head + relation ~= tail. It can't handle
-# symmetric or 1-to-many relations well, so expect it to trail ComplEx/RotatE.
+# TransE on FB15k-237 — Sun et al. 2019 self-adversarial regime (target MRR ~0.30-0.33).
+# TransE is the translation model: head + relation ~= tail. Its strong FB15k-237
+# numbers come from the SAME self-adversarial setup as RotatE (NSSA + 256 negatives +
+# large dim), not the classic margin-ranking loss. (We deliberately switched from
+# marginranking to NSSA here to push it toward paper strength.)
 name: transe_fb15k237
 model: TransE
 random_seed: 42
 
 model_kwargs:
-  embedding_dim: 256
-  scoring_fct_norm: 1   # measure head+relation-vs-tail distance with L1 (sum of |.|)
+  embedding_dim: 1000
+  scoring_fct_norm: 1           # L1 distance between (head+relation) and tail
 
-# Sampled-fakes style: for each true triple, draw a few corrupted ones.
 training_loop: slcwa
 negative_sampler: basic
 negative_sampler_kwargs:
-  num_negs_per_pos: 32   # 32 fakes per true triple
+  num_negs_per_pos: 256
 
-# The MARGIN style from the theory: only penalize when a true triple fails to beat
-# its fake by `margin`; once it does, stop pushing.
-loss: marginranking
+loss: nssa
 loss_kwargs:
-  margin: 5.0
+  margin: 9.0
+  adversarial_temperature: 1.0
 
 optimizer: Adam
 optimizer_kwargs:
-  lr: 0.0005
+  lr: 1.0e-4
 
 training_kwargs:
-  num_epochs: 100
+  num_epochs: 500
   batch_size: 1024
 
 stopper: early
 stopper_kwargs:
-  frequency: 5
-  patience: 3
-  relative_delta: 0.002
+  frequency: 10
+  patience: 6
+  relative_delta: 0.001
   metric: inverse_harmonic_mean_rank
 
 wandb:

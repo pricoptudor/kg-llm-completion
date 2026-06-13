@@ -1,46 +1,46 @@
-# ComplEx on FB15k-237 — LCWA (1-vs-all) + inverse triples.
-# This is ComplEx's strong, sample-efficient regime: every step scores ALL entities
-# as candidate tails (~14.5k implicit negatives per positive), so it converges far
-# faster than sampling a few fakes. We measured this directly on this project:
-# sLCWA(50 negs) gave MRR ~0.08, LCWA-tail-only ~0.14, LCWA+inverse ~0.22 — same
-# model/dim/epochs. (That comparison is a writeup finding on 1-vs-all efficiency.)
+# ComplEx on FB15k-237 — Lacroix et al. 2018 (N3) recipe, paper-comparable.
+# Strong regime: high dim + 1-vs-all (LCWA cross-entropy, ~14.5k implicit negatives
+# per step) + reciprocal (inverse) relations + the weighted 3-norm (N3) regularizer,
+# optimized with Adagrad. Original paper: dim 2000 -> MRR 0.36 / H@10 0.56. We use
+# dim 1000 as a strong, cheaper point (~0.34-0.36 expected). The sensitive knobs are
+# the Adagrad lr (0.5) and the N3 weight (5e-2) — calibrate ComplEx first.
 name: complex_fb15k237
 model: ComplEx
 random_seed: 42
 
 model_kwargs:
-  embedding_dim: 256   # complex dim; real+imag => 512 reals/entity
+  embedding_dim: 1000           # complex dim; real+imag => 2000 reals/entity
+  entity_initializer: xavier_uniform_
+  relation_initializer: xavier_uniform_
 
-# Inverse triples: also learn each relation's inverse so HEAD prediction is trained
-# too (LCWA alone trains tails only -> head-side MRR collapses).
-# NOTE: this renumbers relations inside PyKEEN, so our PyKEENScorer cannot drive
-# this model. That's fine: we report PyKEEN's own filtered metrics for KGE, and our
-# harness is validated separately on the non-inverse config. The cross-check script
-# detects inverse models and defers to PyKEEN automatically.
+# Reciprocal relations: Lacroix trains both directions, so head prediction is learned
+# too (LCWA alone trains tails only). Renumbers relations inside PyKEEN -> we report
+# PyKEEN's own filtered metrics; the cross-check defers to PyKEEN for inverse models.
 create_inverse_triples: true
 
 training_loop: lcwa
-loss: crossentropy   # the all-entity classification loss that pairs with LCWA
+loss: crossentropy              # full multiclass softmax that pairs with LCWA / N3
 
-optimizer: Adam
+optimizer: Adagrad              # Lacroix's optimizer (NOT Adam) — pairs with N3
 optimizer_kwargs:
-  lr: 0.005
+  lr: 0.5
 
-# Size-pressure regularizer (p=3 ~ N3, Lacroix 2018) so ComplEx generalizes.
+# N3 = weighted 3-norm size pressure (Lp with p=3). This is THE regularizer behind
+# ComplEx's strong FB15k-237 numbers.
 regularizer: lp
 regularizer_kwargs:
   p: 3
-  weight: 1.0e-5
+  weight: 5.0e-2
 
 training_kwargs:
-  num_epochs: 100
+  num_epochs: 1000              # early stopping will cut this well short
   batch_size: 1024
 
 stopper: early
 stopper_kwargs:
-  frequency: 5
-  patience: 3
-  relative_delta: 0.002
+  frequency: 10
+  patience: 5
+  relative_delta: 0.001
   metric: inverse_harmonic_mean_rank
 
 wandb:

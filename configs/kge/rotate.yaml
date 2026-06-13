@@ -1,24 +1,21 @@
-# RotatE on FB15k-237 — starting config (tune from here).
-# RotatE represents each relation as a rotation in complex space; it captures
-# symmetry, inversion, and composition. Usually the strongest of these four.
+# RotatE on FB15k-237 — Sun et al. 2019 recipe, paper-comparable (target MRR ~0.338).
+# Relations are rotations in complex space (captures symmetry/inversion/composition),
+# trained with self-adversarial negative sampling (NSSA). The canonical config uses a
+# LARGE dim (1000), MANY negatives (256), and a SMALL Adam lr (5e-5) over many steps.
 name: rotate_fb15k237
 model: RotatE
 random_seed: 42
 
 model_kwargs:
-  embedding_dim: 256
+  embedding_dim: 1000           # complex dim (= 2000 reals), per Sun et al.
 
-# Sampled-fakes style, with MANY fakes per true triple — RotatE's loss is built to
-# exploit them.
 training_loop: slcwa
 negative_sampler: basic
 negative_sampler_kwargs:
-  num_negs_per_pos: 128   # bumped 64->128; RotatE benefits from more negatives
+  num_negs_per_pos: 256         # Sun et al. use 256 self-adversarial negatives
 
-# The "focus on the hard fakes" style from the theory (self-adversarial negative
-# sampling, Sun et al. 2019). `adversarial_temperature` is how sharply the model
-# concentrates on the fakes it currently finds believable (higher = sharper focus);
-# `margin` is the gap it tries to open between true and fake.
+# Self-adversarial NSSA: weight each fake by how believable the model currently finds
+# it (adversarial_temperature), and open a margin gamma between true and fake.
 loss: nssa
 loss_kwargs:
   margin: 9.0
@@ -26,19 +23,17 @@ loss_kwargs:
 
 optimizer: Adam
 optimizer_kwargs:
-  # Bumped 1e-4 -> 5e-4: at 1e-4 RotatE was still improving at epoch 100 (best
-  # val MRR was the LAST epoch, loss still 0.5) — i.e. undertrained, not unstable.
-  lr: 0.0005
+  lr: 5.0e-5                     # small lr; needs many epochs (Sun: ~100k steps)
 
 training_kwargs:
-  num_epochs: 150     # was 100 and hadn't converged; give it more room
+  num_epochs: 500               # ~100k+ steps at batch 1024; early stopping cuts it
   batch_size: 1024
 
 stopper: early
 stopper_kwargs:
-  frequency: 5
-  patience: 3
-  relative_delta: 0.002
+  frequency: 10
+  patience: 6
+  relative_delta: 0.001
   metric: inverse_harmonic_mean_rank
 
 wandb:

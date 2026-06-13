@@ -1,16 +1,17 @@
-# QuatE on FB15k-237 — LCWA (1-vs-all) + inverse triples (same regime as ComplEx).
-# QuatE generalizes ComplEx to quaternions (4 components/coordinate) and connects
-# to your PhD's Clifford-algebra spine.
+# QuatE on FB15k-237 — LCWA (1-vs-all) + inverse triples, bumped dim.
+# QuatE generalizes ComplEx to quaternions (4 components/coordinate) and connects to
+# the PhD's Clifford-algebra spine. HONEST CAVEAT: QuatE's best published FB15k-237
+# (~0.366) needs N3 regularization + reciprocal ("QuatE2"), but PyKEEN's QuatE raises
+# TypeError on a generic `regularizer` kwarg (it normalizes internally), so we cannot
+# add N3 here. With dim + LCWA + inverse we expect ~0.31-0.33 — documented as a
+# framework limitation, not a tuning failure.
 name: quate_fb15k237
 model: QuatE
 random_seed: 42
 
 model_kwargs:
-  embedding_dim: 256   # quaternion dim; 4 real numbers per coordinate
+  embedding_dim: 200            # quaternion dim; 4 reals per coordinate => 800 reals
 
-# Inverse triples for the same reason as ComplEx: LCWA trains tails only, so we add
-# each relation's inverse to also train head prediction. Renumbers relations inside
-# PyKEEN -> report PyKEEN's metrics; cross-check defers to PyKEEN for inverse models.
 create_inverse_triples: true
 
 training_loop: lcwa
@@ -20,18 +21,15 @@ optimizer: Adam
 optimizer_kwargs:
   lr: 0.005
 
-# NOTE: PyKEEN's QuatE does NOT accept a generic `regularizer` kwarg (it raises
-# TypeError: unexpected keyword argument 'regularizer'). QuatE applies its own
-# normalization internally, so we omit the Lp block that ComplEx uses.
 training_kwargs:
-  num_epochs: 100
+  num_epochs: 300
   batch_size: 1024
 
 stopper: early
 stopper_kwargs:
-  frequency: 5
-  patience: 3
-  relative_delta: 0.002
+  frequency: 10
+  patience: 5
+  relative_delta: 0.001
   metric: inverse_harmonic_mean_rank
 
 wandb:
