@@ -34,6 +34,7 @@ def main() -> None:
     ap.add_argument("--no-length-norm", action="store_true")
     ap.add_argument("--adapter", default=None, help="path to a LoRA adapter dir (SFT/DPO eval)")
     ap.add_argument("--chat", action="store_true", help="score via chat template (for SFT/DPO models)")
+    ap.add_argument("--no-kv-cache", action="store_true", help="disable prompt-KV caching (debug)")
     args = ap.parse_args()
 
     if args.adapter:
@@ -68,6 +69,7 @@ def main() -> None:
         length_normalize=not args.no_length_norm,
         cand_batch_size=args.cand_batch_size,
         chat_template=args.chat,
+        use_kv_cache=not args.no_kv_cache,
     )
 
     n = min(args.num_test, ds.test_triples.shape[0])

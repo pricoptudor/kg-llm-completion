@@ -21,8 +21,11 @@ Implementation notes:
 - Candidate names are tokenized ONCE into a padded matrix at init.
 - Scoring is vectorized per candidate batch (one forward, gather, masked sum); we
   never call .item() in the hot path (that forces a GPU->CPU sync per candidate).
-- No hand-rolled KV-cache reuse (not portable: Qwen3.5 is linear-attention). For a
-  faster full eval later, use vLLM (internal prefix caching).
+- Prompt-KV caching (use_kv_cache=True): the prompt is identical across all
+  candidates of a query, so we encode it ONCE, snapshot its DynamicCache, and reuse
+  it (batch_repeat_interleave) for every candidate batch instead of re-encoding the
+  prompt ~14.5k times. Same log-probs, ~10x fewer forwards on full-candidate eval.
+  Falls back to the uncached path automatically if the cache API mismatches.
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ class LLMScorer:
         length_normalize: bool = True,
         cand_batch_size: int = 128,
         chat_template: bool = False,
+        use_kv_cache: bool = True,
         device=None,
     ) -> None:
         self.model = model.eval()
@@ -65,6 +69,8 @@ class LLMScorer:
         # prompt (for SFT/DPO models, matching how they were trained). False = the
         # plain-completion prompt (for the zero-shot base model).
         self.chat_template = chat_template
+        self.use_kv_cache = use_kv_cache
+        self._cache_warned = False
         self.device = device or next(model.parameters()).device
 
         if self.tok.pad_token_id is None:
@@ -92,8 +98,80 @@ class LLMScorer:
         self._cand_mask = mask.to(self.device)
         self._cand_len = lengths.to(self.device)
 
-    @torch.no_grad()
     def _score_indices(self, prefix: str, idx: torch.Tensor) -> torch.Tensor:
+        """Dispatch to the cached fast path, falling back to uncached on any error."""
+        if self.use_kv_cache:
+            try:
+                return self._score_indices_cached(prefix, idx)
+            except Exception as e:  # noqa: BLE001 - cache API drift -> safe fallback
+                if not self._cache_warned:
+                    print(f"[scorer] KV-cache path disabled ({type(e).__name__}: {e}); "
+                          "using uncached scoring.")
+                    self._cache_warned = True
+                self.use_kv_cache = False
+        return self._score_indices_nocache(prefix, idx)
+
+    @torch.no_grad()
+    def _score_indices_cached(self, prefix: str, idx: torch.Tensor) -> torch.Tensor:
+        """Same scores as _score_indices_nocache, but encode the prompt ONCE and reuse
+        its KV cache across candidate batches (the prompt is shared by all candidates)."""
+        import copy
+
+        dev = self.device
+        idx = idx.to(dev)
+        prefix_ids = self.tok(prefix, add_special_tokens=True).input_ids
+        plen = len(prefix_ids)
+        prefix_t = torch.tensor([prefix_ids], dtype=torch.long, device=dev)  # (1, plen)
+
+        pout = self.model(input_ids=prefix_t, use_cache=True)
+        prefix_cache = pout.past_key_values            # DynamicCache, batch 1, len plen
+        last_logit = pout.logits[:, -1, :].float()     # (1, V): predicts candidate token 0
+
+        n = idx.shape[0]
+        out = torch.empty(n, device=dev)
+        for start in range(0, n, self.cand_batch_size):
+            chunk = idx[start : start + self.cand_batch_size]
+            B = chunk.shape[0]
+            lens = self._cand_len[chunk]
+            max_a = int(lens.max())
+            if max_a == 0:
+                out[start : start + B] = float("-inf")
+                continue
+            cand_block = self._cand_matrix[chunk][:, :max_a]   # (B, max_a)
+            mask_block = self._cand_mask[chunk][:, :max_a]     # (B, max_a)
+
+            # Fresh expanded copy of the pristine prefix cache (the forward appends to it).
+            cache = copy.deepcopy(prefix_cache)
+            ret = cache.batch_repeat_interleave(B)             # 1 -> B identical rows
+            if ret is not None:
+                cache = ret
+            attn = torch.cat([torch.ones(B, plen, device=dev), mask_block], dim=1).long()
+            cache_pos = torch.arange(plen, plen + max_a, device=dev)
+
+            logits_cand = self.model(
+                input_ids=cand_block,
+                attention_mask=attn,
+                past_key_values=cache,
+                use_cache=False,
+                cache_position=cache_pos,
+            ).logits.float()                                   # (B, max_a, V)
+
+            # Align predictions to candidate tokens 0..max_a-1:
+            #   token 0  <- cached prefix's last logit
+            #   token j  <- logits_cand[:, j-1]
+            pred = torch.cat(
+                [last_logit.expand(B, -1).unsqueeze(1), logits_cand[:, : max_a - 1, :]],
+                dim=1,
+            )                                                  # (B, max_a, V)
+            tok_lp = torch.log_softmax(pred, dim=-1).gather(2, cand_block.unsqueeze(-1)).squeeze(-1)
+            summed = (tok_lp * mask_block).sum(dim=1)
+            if self.length_normalize:
+                summed = summed / lens.clamp(min=1).float()
+            out[start : start + B] = summed
+        return out.cpu()
+
+    @torch.no_grad()
+    def _score_indices_nocache(self, prefix: str, idx: torch.Tensor) -> torch.Tensor:
         """Score the entities in `idx` (1-D long) as continuations of `prefix`.
 
         Returns a (len(idx),) tensor aligned to `idx`.
