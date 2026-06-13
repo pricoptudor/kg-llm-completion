@@ -128,3 +128,11 @@ Lessons worth a paragraph each in the report:
   T4 fp16 + ~2x kernels): full 100k-example epoch in ~72 min. Also: raw `trl`
   packing cross-contaminates without flash-attn (which Turing lacks); free VRAM ≠
   free speed (we were compute-bound at batch 32, 3.8/16 GB). *(→ Method / engineering.)*
+
+- **ComplEx dim-hunger, measured.** Re-running ComplEx+N3 at **dim 1000** (Adagrad
+  lr 0.5, N3 weight 5e-2, 1-vs-all + inverse) reached test **MRR 0.292** but val-MRR
+  was *still climbing at epoch 1000* (early stopping never fired; ~2h/run) — i.e.
+  undertrained, not converged. Direct evidence that ComplEx needs both large dim and
+  a large step budget to reach its published ~0.36; at our shared dim-256 protocol it
+  sits at 0.222. We report the **dim-256** set for all four models (one fair protocol)
+  and cite this run as the dim-hunger data point. *(→ Analysis / Limitations.)*

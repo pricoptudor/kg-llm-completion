@@ -1,39 +1,34 @@
-# TransE on FB15k-237 — Sun et al. 2019 self-adversarial regime (target MRR ~0.30-0.33).
-# TransE is the translation model: head + relation ~= tail. Its strong FB15k-237
-# numbers come from the SAME self-adversarial setup as RotatE (NSSA + 256 negatives +
-# large dim), not the classic margin-ranking loss. (We deliberately switched from
-# marginranking to NSSA here to push it toward paper strength.)
+# TransE on FB15k-237 — dim 256, margin-ranking + sampled negatives (reported: 0.289).
 name: transe_fb15k237
 model: TransE
 random_seed: 42
 
 model_kwargs:
-  embedding_dim: 1000
-  scoring_fct_norm: 1           # L1 distance between (head+relation) and tail
+  embedding_dim: 256
+  scoring_fct_norm: 1
 
 training_loop: slcwa
 negative_sampler: basic
 negative_sampler_kwargs:
-  num_negs_per_pos: 256
+  num_negs_per_pos: 32
 
-loss: nssa
+loss: marginranking
 loss_kwargs:
-  margin: 9.0
-  adversarial_temperature: 1.0
+  margin: 5.0
 
 optimizer: Adam
 optimizer_kwargs:
-  lr: 1.0e-4
+  lr: 0.0005
 
 training_kwargs:
-  num_epochs: 500
+  num_epochs: 100
   batch_size: 1024
 
 stopper: early
 stopper_kwargs:
-  frequency: 10
-  patience: 6
-  relative_delta: 0.001
+  frequency: 5
+  patience: 3
+  relative_delta: 0.002
   metric: inverse_harmonic_mean_rank
 
 wandb:
